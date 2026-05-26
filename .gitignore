@@ -1,0 +1,60 @@
+target/
+!.mvn/wrapper/maven-wrapper.jar
+!**/src/main/**/target/
+!**/src/test/**/target/
+
+### IntelliJ IDEA ###
+.idea/modules.xml
+.idea/jarRepositories.xml
+.idea/compiler.xml
+.idea/libraries/
+.idea/workspace.xml
+.idea/runConfigurations/
+.idea/dictionaries/
+*.iws
+*.iml
+*.ipr
+
+### Eclipse ###
+.apt_generated
+.classpath
+.factorypath
+.project
+.settings
+.springBeans
+.sts4-cache
+
+### NetBeans ###
+/nbproject/private/
+/nbbuild/
+/dist/
+/nbdist/
+/.nb-gradle/
+build/
+!**/src/main/**/build/
+!**/src/test/**/build/
+
+### VS Code ###
+.vscode/
+
+### Mac OS ###
+.DS_Store
+
+### Build & Runtime ###
+out/                # Compiled output (4.9G+)
+dist/               # Distribution JARs
+com/                # Decompiled JAR classes
+lib/                 # Huawei JAR files (copy from internal repo)
+*.bak
+
+### Binary files ###
+*.class
+*.jar
+*.so
+*.abc
+*.hap
+
+### Sample apps (test data, not source code) ###
+samples/
+input/
+.git_old/

@@ -1,0 +1,1783 @@
+[
+    {
+        "systemPackage": "@kit.NetworkKit",
+        "privacyApis": [
+            {
+                "directCall": true,
+                "namespace": "connection",
+                "method": "getAllNets",
+                "permission": "ohos.permission.GET_NETWORK_INFO",
+                "profilingCategory": "network.connectivity",
+                "ohos_module": "@ohos:net.connection",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": true,
+                "namespace": "connection",
+                "method": "getNetCapabilities",
+                "permission": "ohos.permission.GET_NETWORK_INFO",
+                "profilingCategory": "network.connectivity",
+                "ohos_module": "@ohos:net.connection",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": true,
+                "namespace": "connection",
+                "method": "getConnectionProperties",
+                "permission": "ohos.permission.GET_NETWORK_INFO",
+                "profilingCategory": "network.connectivity",
+                "ohos_module": "@ohos:net.connection",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": true,
+                "namespace": "connection",
+                "method": "getAddressesByName",
+                "permission": "ohos.permission.GET_NETWORK_INFO",
+                "profilingCategory": "network.connectivity",
+                "ohos_module": "@ohos:net.connection",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": true,
+                "namespace": "connection",
+                "method": "getDefaultNet",
+                "permission": "ohos.permission.GET_NETWORK_INFO",
+                "profilingCategory": "network.connectivity",
+                "ohos_module": "@ohos:net.connection",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": true,
+                "namespace": "http",
+                "method": "createHttp",
+                "permission": "ohos.permission.INTERNET",
+                "profilingCategory": "network.http",
+                "ohos_module": "@ohos:net.http",
+                "dataDirection": "sink"
+            },
+            {
+                "directCall": false,
+                "namespace": "http",
+                "method": "request",
+                "profilingCategory": "network.http",
+                "ohos_module": "@ohos:net.http",
+                "dataDirection": "sink"
+            },
+            {
+                "directCall": false,
+                "namespace": "http",
+                "method": "requestInStream",
+                "profilingCategory": "network.http",
+                "ohos_module": "@ohos:net.http",
+                "dataDirection": "sink"
+            },
+            {
+                "directCall": true,
+                "namespace": "socket",
+                "method": "constructTCPSocketInstance",
+                "permission": "ohos.permission.INTERNET",
+                "profilingCategory": "network.socket",
+                "ohos_module": "@ohos:net.socket",
+                "dataDirection": "sink"
+            },
+            {
+                "directCall": true,
+                "namespace": "socket",
+                "method": "constructUDPSocketInstance",
+                "permission": "ohos.permission.INTERNET",
+                "profilingCategory": "network.socket",
+                "ohos_module": "@ohos:net.socket",
+                "dataDirection": "sink"
+            },
+            {
+                "directCall": true,
+                "namespace": "socket",
+                "method": "constructTLSSocketInstance",
+                "permission": "ohos.permission.INTERNET",
+                "profilingCategory": "network.socket",
+                "ohos_module": "@ohos:net.socket",
+                "dataDirection": "sink"
+            }
+        ]
+    },
+    {
+        "systemPackage": "@kit.AdsKit",
+        "privacyApis": [
+            {
+                "directCall": true,
+                "namespace": "identifier",
+                "method": "getOAID",
+                "permission": "ohos.permission.APP_TRACKING_CONSENT",
+                "profilingCategory": "device_identity.ad_tracking",
+                "ohos_module": "@ohos:identifier.oaid",
+                "dataDirection": "source"
+            }
+        ]
+    },
+    {
+        "systemPackage": "@kit.TelephonyKit",
+        "privacyApis": [
+            {
+                "directCall": true,
+                "namespace": "sim",
+                "method": "getSimOperatorNumeric",
+                "profilingCategory": "device_identity.sim",
+                "ohos_module": "@ohos:telephony.sim",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": true,
+                "namespace": "sim",
+                "method": "getSimSpn",
+                "profilingCategory": "device_identity.sim",
+                "ohos_module": "@ohos:telephony.sim",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": true,
+                "namespace": "sim",
+                "method": "getSimAccountInfo",
+                "profilingCategory": "device_identity.sim",
+                "ohos_module": "@ohos:telephony.sim",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": true,
+                "namespace": "sim",
+                "method": "getActiveSimAccountInfoList",
+                "profilingCategory": "device_identity.sim",
+                "ohos_module": "@ohos:telephony.sim",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": true,
+                "namespace": "sim",
+                "method": "getISOCountryCodeForSimSync",
+                "profilingCategory": "device_identity.sim",
+                "ohos_module": "@ohos:telephony.sim",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": true,
+                "namespace": "sms",
+                "method": "getDefaultSmsSimId",
+                "profilingCategory": "user_data.sms",
+                "ohos_module": "@ohos:telephony.sms",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": true,
+                "namespace": "sms",
+                "method": "getDefaultSmsSlotId",
+                "profilingCategory": "user_data.sms",
+                "ohos_module": "@ohos:telephony.sms",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": true,
+                "namespace": "sms",
+                "method": "hasSmsCapability",
+                "profilingCategory": "user_data.sms",
+                "ohos_module": "@ohos:telephony.sms",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": true,
+                "namespace": "sms",
+                "method": "sendMessage",
+                "profilingCategory": "user_data.sms",
+                "ohos_module": "@ohos:telephony.sms",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": true,
+                "namespace": "sms",
+                "method": "createMessage",
+                "profilingCategory": "user_data.sms",
+                "ohos_module": "@ohos:telephony.sms",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": true,
+                "namespace": "radio",
+                "method": "getNetworkState",
+                "profilingCategory": "network.cellular",
+                "ohos_module": "@ohos:telephony.radio",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": true,
+                "namespace": "radio",
+                "method": "getSignalInformation",
+                "profilingCategory": "network.cellular",
+                "ohos_module": "@ohos:telephony.radio",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": true,
+                "namespace": "radio",
+                "method": "getRadioTech",
+                "profilingCategory": "network.cellular",
+                "ohos_module": "@ohos:telephony.radio",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": true,
+                "namespace": "radio",
+                "method": "isNrSupported",
+                "profilingCategory": "network.cellular",
+                "ohos_module": "@ohos:telephony.radio",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": true,
+                "namespace": "radio",
+                "method": "getNetworkSelectionMode",
+                "profilingCategory": "network.cellular",
+                "ohos_module": "@ohos:telephony.radio",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": true,
+                "namespace": "call",
+                "method": "hasCall",
+                "profilingCategory": "user_behavior.call",
+                "ohos_module": "@ohos:telephony.call",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": true,
+                "namespace": "call",
+                "method": "getCallState",
+                "profilingCategory": "user_behavior.call",
+                "ohos_module": "@ohos:telephony.call",
+                "dataDirection": "source"
+            }
+        ]
+    },
+    {
+        "systemPackage": "@kit.BasicServicesKit",
+        "privacyApis": [
+            {
+                "directCall": false,
+                "namespace": "pasteboard",
+                "method": "getSystemPasteboard",
+                "profilingCategory": "user_data.clipboard",
+                "ohos_module": "@ohos:pasteboard",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": false,
+                "namespace": "pasteboard",
+                "method": "getData",
+                "profilingCategory": "user_data.clipboard",
+                "ohos_module": "@ohos:pasteboard",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": false,
+                "namespace": "pasteboard",
+                "method": "getPasteData",
+                "profilingCategory": "user_data.clipboard",
+                "ohos_module": "@ohos:pasteboard",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": false,
+                "namespace": "pasteboard",
+                "method": "getPrimaryText",
+                "profilingCategory": "user_data.clipboard",
+                "ohos_module": "@ohos:pasteboard",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": false,
+                "namespace": "osAccount",
+                "method": "getAccountManager",
+                "profilingCategory": "user_data.account",
+                "ohos_module": "@ohos:account.osAccount",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": false,
+                "namespace": "osAccount",
+                "method": "getOsAccountLocalId",
+                "permission": "ohos.permission.MANAGE_LOCAL_ACCOUNTS",
+                "profilingCategory": "user_data.account",
+                "ohos_module": "@ohos:account.osAccount",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": false,
+                "namespace": "osAccount",
+                "method": "queryOsAccountLocalIdFromProcess",
+                "profilingCategory": "user_data.account",
+                "ohos_module": "@ohos:account.osAccount",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": false,
+                "namespace": "appAccount",
+                "method": "createAppAccountManager",
+                "profilingCategory": "user_data.account",
+                "ohos_module": "@ohos:account.appAccount",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": false,
+                "namespace": "appAccount",
+                "method": "getAllAccounts",
+                "permission": "ohos.permission.GET_APP_ACCOUNTS",
+                "profilingCategory": "user_data.account",
+                "ohos_module": "@ohos:account.appAccount",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": false,
+                "namespace": "appAccount",
+                "method": "createAccount",
+                "profilingCategory": "user_data.account",
+                "ohos_module": "@ohos:account.appAccount",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": false,
+                "namespace": "distributedAccount",
+                "method": "getDistributedAccountAbility",
+                "profilingCategory": "user_data.account",
+                "ohos_module": "@ohos:account.distributedAccount",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": false,
+                "namespace": "distributedAccount",
+                "method": "getOsAccountDistributedInfo",
+                "profilingCategory": "user_data.account",
+                "ohos_module": "@ohos:account.distributedAccount",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": null,
+                "namespace": "deviceInfo",
+                "method": "deviceType",
+                "profilingCategory": "device_identity.hardware",
+                "ohos_module": "@ohos:deviceInfo",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": null,
+                "namespace": "deviceInfo",
+                "method": "manufacture",
+                "profilingCategory": "device_identity.hardware",
+                "ohos_module": "@ohos:deviceInfo",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": null,
+                "namespace": "deviceInfo",
+                "method": "brand",
+                "profilingCategory": "device_identity.hardware",
+                "ohos_module": "@ohos:deviceInfo",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": null,
+                "namespace": "deviceInfo",
+                "method": "marketName",
+                "profilingCategory": "device_identity.hardware",
+                "ohos_module": "@ohos:deviceInfo",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": null,
+                "namespace": "deviceInfo",
+                "method": "productSeries",
+                "profilingCategory": "device_identity.hardware",
+                "ohos_module": "@ohos:deviceInfo",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": null,
+                "namespace": "deviceInfo",
+                "method": "productModel",
+                "profilingCategory": "device_identity.hardware",
+                "ohos_module": "@ohos:deviceInfo",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": null,
+                "namespace": "deviceInfo",
+                "method": "displayVersion",
+                "profilingCategory": "device_identity.software",
+                "ohos_module": "@ohos:deviceInfo",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": null,
+                "namespace": "deviceInfo",
+                "method": "incrementalVersion",
+                "profilingCategory": "device_identity.software",
+                "ohos_module": "@ohos:deviceInfo",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": null,
+                "namespace": "deviceInfo",
+                "method": "osFullName",
+                "profilingCategory": "device_identity.software",
+                "ohos_module": "@ohos:deviceInfo",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": null,
+                "namespace": "deviceInfo",
+                "method": "securityPatchTag",
+                "profilingCategory": "device_identity.software",
+                "ohos_module": "@ohos:deviceInfo",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": null,
+                "namespace": "deviceInfo",
+                "method": "bootloaderVersion",
+                "profilingCategory": "device_identity.software",
+                "ohos_module": "@ohos:deviceInfo",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": null,
+                "namespace": "deviceInfo",
+                "method": "serial",
+                "profilingCategory": "device_identity.unique_id",
+                "ohos_module": "@ohos:deviceInfo",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": null,
+                "namespace": "deviceInfo",
+                "method": "udid",
+                "profilingCategory": "device_identity.unique_id",
+                "ohos_module": "@ohos:deviceInfo",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": null,
+                "namespace": "batteryInfo",
+                "method": "batterySOC",
+                "profilingCategory": "device_status.battery",
+                "ohos_module": "@ohos:batteryInfo",
+                "dataDirection": "excluded"
+            },
+            {
+                "directCall": null,
+                "namespace": "batteryInfo",
+                "method": "chargingStatus",
+                "profilingCategory": "device_status.battery",
+                "ohos_module": "@ohos:batteryInfo",
+                "dataDirection": "excluded"
+            },
+            {
+                "directCall": null,
+                "namespace": "batteryInfo",
+                "method": "healthStatus",
+                "profilingCategory": "device_status.battery",
+                "ohos_module": "@ohos:batteryInfo",
+                "dataDirection": "excluded"
+            },
+            {
+                "directCall": null,
+                "namespace": "batteryInfo",
+                "method": "pluggedType",
+                "profilingCategory": "device_status.battery",
+                "ohos_module": "@ohos:batteryInfo",
+                "dataDirection": "excluded"
+            },
+            {
+                "directCall": null,
+                "namespace": "batteryInfo",
+                "method": "voltage",
+                "profilingCategory": "device_status.battery",
+                "ohos_module": "@ohos:batteryInfo",
+                "dataDirection": "excluded"
+            },
+            {
+                "directCall": null,
+                "namespace": "batteryInfo",
+                "method": "technology",
+                "profilingCategory": "device_status.battery",
+                "ohos_module": "@ohos:batteryInfo",
+                "dataDirection": "excluded"
+            },
+            {
+                "directCall": null,
+                "namespace": "batteryInfo",
+                "method": "batteryTemperature",
+                "profilingCategory": "device_status.battery",
+                "ohos_module": "@ohos:batteryInfo",
+                "dataDirection": "excluded"
+            },
+            {
+                "directCall": null,
+                "namespace": "batteryInfo",
+                "method": "isBatteryPresent",
+                "profilingCategory": "device_status.battery",
+                "ohos_module": "@ohos:batteryInfo",
+                "dataDirection": "excluded"
+            },
+            {
+                "directCall": null,
+                "namespace": "batteryInfo",
+                "method": "batteryCapacityLevel",
+                "profilingCategory": "device_status.battery",
+                "ohos_module": "@ohos:batteryInfo",
+                "dataDirection": "excluded"
+            },
+            {
+                "directCall": null,
+                "namespace": "batteryInfo",
+                "method": "nowCurrent",
+                "profilingCategory": "device_status.battery",
+                "ohos_module": "@ohos:batteryInfo",
+                "dataDirection": "excluded"
+            },
+            {
+                "directCall": true,
+                "namespace": "i18n",
+                "method": "getSystemLanguage",
+                "profilingCategory": "user_preference.locale",
+                "ohos_module": "@ohos:i18n",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": true,
+                "namespace": "i18n",
+                "method": "getSystemRegion",
+                "profilingCategory": "user_preference.locale",
+                "ohos_module": "@ohos:i18n",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": true,
+                "namespace": "i18n",
+                "method": "getTimeZone",
+                "profilingCategory": "user_preference.locale",
+                "ohos_module": "@ohos:i18n",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": true,
+                "namespace": "settings",
+                "method": "getValueSync",
+                "profilingCategory": "user_preference.settings",
+                "ohos_module": "@ohos:settings",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": true,
+                "namespace": "settings",
+                "method": "getValue",
+                "profilingCategory": "user_preference.settings",
+                "ohos_module": "@ohos:settings",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": true,
+                "namespace": "settings",
+                "method": "setValue",
+                "profilingCategory": "user_preference.settings",
+                "ohos_module": "@ohos:settings",
+                "dataDirection": "sink"
+            },
+            {
+                "directCall": true,
+                "namespace": "systemDateTime",
+                "method": "getCurrentTime",
+                "profilingCategory": "user_preference.time",
+                "ohos_module": "@ohos:systemDateTime",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": true,
+                "namespace": "systemDateTime",
+                "method": "getTimezone",
+                "profilingCategory": "user_preference.time",
+                "ohos_module": "@ohos:systemDateTime",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": true,
+                "namespace": "systemDateTime",
+                "method": "getUptime",
+                "profilingCategory": "device_status.uptime",
+                "ohos_module": "@ohos:systemDateTime",
+                "dataDirection": "excluded"
+            },
+            {
+                "directCall": null,
+                "namespace": "deviceInfo",
+                "method": "abiList",
+                "profilingCategory": "device_identity.hardware",
+                "ohos_module": "@ohos:deviceInfo",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": null,
+                "namespace": "deviceInfo",
+                "method": "sdkApiVersion",
+                "profilingCategory": "device_identity.software",
+                "ohos_module": "@ohos:deviceInfo",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": null,
+                "namespace": "deviceInfo",
+                "method": "firstApiVersion",
+                "profilingCategory": "device_identity.software",
+                "ohos_module": "@ohos:deviceInfo",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": null,
+                "namespace": "deviceInfo",
+                "method": "buildType",
+                "profilingCategory": "device_identity.software",
+                "ohos_module": "@ohos:deviceInfo",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": null,
+                "namespace": "deviceInfo",
+                "method": "buildUser",
+                "profilingCategory": "device_identity.software",
+                "ohos_module": "@ohos:deviceInfo",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": null,
+                "namespace": "deviceInfo",
+                "method": "buildHost",
+                "profilingCategory": "device_identity.software",
+                "ohos_module": "@ohos:deviceInfo",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": null,
+                "namespace": "deviceInfo",
+                "method": "buildRootHash",
+                "profilingCategory": "device_identity.software",
+                "ohos_module": "@ohos:deviceInfo",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": null,
+                "namespace": "deviceInfo",
+                "method": "hardwareModel",
+                "profilingCategory": "device_identity.hardware",
+                "ohos_module": "@ohos:deviceInfo",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": null,
+                "namespace": "deviceInfo",
+                "method": "hardwareProfile",
+                "profilingCategory": "device_identity.hardware",
+                "ohos_module": "@ohos:deviceInfo",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": null,
+                "namespace": "deviceInfo",
+                "method": "softwareModel",
+                "profilingCategory": "device_identity.hardware",
+                "ohos_module": "@ohos:deviceInfo",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": null,
+                "namespace": "deviceInfo",
+                "method": "distributionOSName",
+                "profilingCategory": "device_identity.software",
+                "ohos_module": "@ohos:deviceInfo",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": null,
+                "namespace": "deviceInfo",
+                "method": "distributionOSVersion",
+                "profilingCategory": "device_identity.software",
+                "ohos_module": "@ohos:deviceInfo",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": true,
+                "namespace": "i18n",
+                "method": "getSystemLocale",
+                "profilingCategory": "user_preference.locale",
+                "ohos_module": "@ohos:i18n",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": true,
+                "namespace": "i18n",
+                "method": "is24HourClock",
+                "profilingCategory": "user_preference.locale",
+                "ohos_module": "@ohos:i18n",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": true,
+                "namespace": "i18n",
+                "method": "getPreferredLanguageList",
+                "profilingCategory": "user_preference.locale",
+                "ohos_module": "@ohos:i18n",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": true,
+                "namespace": "i18n",
+                "method": "getSystemCountries",
+                "profilingCategory": "user_preference.locale",
+                "ohos_module": "@ohos:i18n",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": true,
+                "namespace": "i18n",
+                "method": "getDisplayCountry",
+                "profilingCategory": "user_preference.locale",
+                "ohos_module": "@ohos:i18n",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": true,
+                "namespace": "i18n",
+                "method": "getDisplayLanguage",
+                "profilingCategory": "user_preference.locale",
+                "ohos_module": "@ohos:i18n",
+                "dataDirection": "source"
+            }
+        ]
+    },
+    {
+        "systemPackage": "@kit.CameraKit",
+        "privacyApis": [
+            {
+                "directCall": false,
+                "namespace": "camera",
+                "method": "getCameraManager",
+                "permission": "ohos.permission.CAMERA",
+                "profilingCategory": "media.camera",
+                "ohos_module": "@ohos:multimedia.camera",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": false,
+                "namespace": "camera",
+                "method": "getSupportedCameras",
+                "permission": "ohos.permission.CAMERA",
+                "profilingCategory": "media.camera",
+                "ohos_module": "@ohos:multimedia.camera",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": false,
+                "namespace": "camera",
+                "method": "createCaptureSession",
+                "permission": "ohos.permission.CAMERA",
+                "profilingCategory": "media.camera",
+                "ohos_module": "@ohos:multimedia.camera",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": false,
+                "namespace": "camera",
+                "method": "createPhotoOutput",
+                "permission": "ohos.permission.CAMERA",
+                "profilingCategory": "media.camera",
+                "ohos_module": "@ohos:multimedia.camera",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": false,
+                "namespace": "camera",
+                "method": "createVideoOutput",
+                "permission": "ohos.permission.CAMERA",
+                "profilingCategory": "media.camera",
+                "ohos_module": "@ohos:multimedia.camera",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": false,
+                "namespace": "camera",
+                "method": "createPreviewOutput",
+                "permission": "ohos.permission.CAMERA",
+                "profilingCategory": "media.camera",
+                "ohos_module": "@ohos:multimedia.camera",
+                "dataDirection": "source"
+            }
+        ]
+    },
+    {
+        "systemPackage": "@kit.AudioKit",
+        "privacyApis": [
+            {
+                "directCall": false,
+                "namespace": "audio",
+                "method": "getAudioManager",
+                "permission": "ohos.permission.MICROPHONE",
+                "profilingCategory": "media.audio",
+                "ohos_module": "@ohos:multimedia.audio",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": false,
+                "namespace": "audio",
+                "method": "createAudioCapturer",
+                "permission": "ohos.permission.MICROPHONE",
+                "profilingCategory": "media.audio",
+                "ohos_module": "@ohos:multimedia.audio",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": false,
+                "namespace": "audio",
+                "method": "getAudioScene",
+                "permission": "ohos.permission.MICROPHONE",
+                "profilingCategory": "media.audio",
+                "ohos_module": "@ohos:multimedia.audio",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": false,
+                "namespace": "audio",
+                "method": "createAudioRenderer",
+                "profilingCategory": "media.audio",
+                "ohos_module": "@ohos:multimedia.audio",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": false,
+                "namespace": "audio",
+                "method": "getRoutingManager",
+                "profilingCategory": "media.audio",
+                "ohos_module": "@ohos:multimedia.audio",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": false,
+                "namespace": "audio",
+                "method": "getStreamManager",
+                "profilingCategory": "media.audio",
+                "ohos_module": "@ohos:multimedia.audio",
+                "dataDirection": "source"
+            }
+        ]
+    },
+    {
+        "systemPackage": "@kit.ConnectivityKit",
+        "privacyApis": [
+            {
+                "directCall": true,
+                "namespace": "access",
+                "method": "getState",
+                "permission": "ohos.permission.ACCESS_BLUETOOTH",
+                "profilingCategory": "network.bluetooth",
+                "ohos_module": "@ohos:bluetooth.access",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": true,
+                "namespace": "access",
+                "method": "on",
+                "permission": "ohos.permission.ACCESS_BLUETOOTH",
+                "profilingCategory": "network.bluetooth",
+                "ohos_module": "@ohos:bluetooth.access",
+                "dataDirection": "sink"
+            },
+            {
+                "directCall": true,
+                "namespace": "a2dp",
+                "method": "getConnectionState",
+                "permission": "ohos.permission.ACCESS_BLUETOOTH",
+                "profilingCategory": "network.bluetooth",
+                "ohos_module": "@ohos:bluetooth.a2dp",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": true,
+                "namespace": "wifiManager",
+                "method": "getScanInfoList",
+                "permission": "ohos.permission.GET_WIFI_INFO",
+                "profilingCategory": "network.wifi",
+                "ohos_module": "@ohos:wifiManager",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": true,
+                "namespace": "wifiManager",
+                "method": "getLinkedInfo",
+                "permission": "ohos.permission.GET_WIFI_INFO",
+                "profilingCategory": "network.wifi",
+                "ohos_module": "@ohos:wifiManager",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": true,
+                "namespace": "wifiManager",
+                "method": "isConnected",
+                "profilingCategory": "network.wifi",
+                "ohos_module": "@ohos:wifiManager",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": true,
+                "namespace": "wifiManager",
+                "method": "getIpInfo",
+                "profilingCategory": "network.wifi",
+                "ohos_module": "@ohos:wifiManager",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": true,
+                "namespace": "connection",
+                "method": "getPairedDevices",
+                "permission": "ohos.permission.ACCESS_BLUETOOTH",
+                "profilingCategory": "network.bluetooth",
+                "ohos_module": "@ohos:bluetooth.connection",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": true,
+                "namespace": "connection",
+                "method": "getRemoteDeviceName",
+                "permission": "ohos.permission.ACCESS_BLUETOOTH",
+                "profilingCategory": "network.bluetooth",
+                "ohos_module": "@ohos:bluetooth.connection",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": true,
+                "namespace": "connection",
+                "method": "getRemoteDeviceClass",
+                "permission": "ohos.permission.ACCESS_BLUETOOTH",
+                "profilingCategory": "network.bluetooth",
+                "ohos_module": "@ohos:bluetooth.connection",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": true,
+                "namespace": "connection",
+                "method": "getLocalName",
+                "permission": "ohos.permission.ACCESS_BLUETOOTH",
+                "profilingCategory": "network.bluetooth",
+                "ohos_module": "@ohos:bluetooth.connection",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": true,
+                "namespace": "wifiManager",
+                "method": "getDeviceMacAddress",
+                "permission": "ohos.permission.GET_WIFI_LOCAL_MAC",
+                "profilingCategory": "device_identity.mac",
+                "ohos_module": "@ohos:wifiManager",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": true,
+                "namespace": "wifiManager",
+                "method": "isWifiActive",
+                "profilingCategory": "network.wifi",
+                "ohos_module": "@ohos:wifiManager",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": true,
+                "namespace": "wifiManager",
+                "method": "getCountryCode",
+                "profilingCategory": "network.wifi",
+                "ohos_module": "@ohos:wifiManager",
+                "dataDirection": "source"
+            }
+        ]
+    },
+    {
+        "systemPackage": "@kit.LocationKit",
+        "privacyApis": [
+            {
+                "directCall": true,
+                "namespace": "geoLocationManager",
+                "method": "isLocationEnabled",
+                "permission": "ohos.permission.LOCATION",
+                "profilingCategory": "location",
+                "ohos_module": "@ohos:geoLocationManager",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": true,
+                "namespace": "geoLocationManager",
+                "method": "getLastLocation",
+                "permission": "ohos.permission.LOCATION",
+                "profilingCategory": "location",
+                "ohos_module": "@ohos:geoLocationManager",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": true,
+                "namespace": "geoLocationManager",
+                "method": "getCurrentLocation",
+                "permission": "ohos.permission.LOCATION",
+                "profilingCategory": "location",
+                "ohos_module": "@ohos:geoLocationManager",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": true,
+                "namespace": "geoLocationManager",
+                "method": "getAddressesFromLocation",
+                "permission": "ohos.permission.LOCATION",
+                "profilingCategory": "location",
+                "ohos_module": "@ohos:geoLocationManager",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": true,
+                "namespace": "geoLocationManager",
+                "method": "on",
+                "permission": "ohos.permission.LOCATION",
+                "profilingCategory": "location",
+                "ohos_module": "@ohos:geoLocationManager",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": true,
+                "namespace": "geoLocationManager",
+                "method": "getAddressesFromLocationName",
+                "permission": "ohos.permission.LOCATION",
+                "profilingCategory": "location",
+                "ohos_module": "@ohos:geoLocationManager",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": true,
+                "namespace": "geoLocationManager",
+                "method": "isGeocoderAvailable",
+                "permission": "ohos.permission.LOCATION",
+                "profilingCategory": "location",
+                "ohos_module": "@ohos:geoLocationManager",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": true,
+                "namespace": "geoLocationManager",
+                "method": "getCachedGnssLocationsSize",
+                "permission": "ohos.permission.LOCATION",
+                "profilingCategory": "location",
+                "ohos_module": "@ohos:geoLocationManager",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": true,
+                "namespace": "geoLocationManager",
+                "method": "getCountryCode",
+                "permission": "ohos.permission.LOCATION",
+                "profilingCategory": "location",
+                "ohos_module": "@ohos:geoLocationManager",
+                "dataDirection": "source"
+            }
+        ]
+    },
+    {
+        "systemPackage": "@kit.SensorServiceKit",
+        "privacyApis": [
+            {
+                "directCall": true,
+                "namespace": "sensor",
+                "method": "on",
+                "permission": "ohos.permission.ACTIVITY_MOTION",
+                "profilingCategory": "device_status.sensor",
+                "ohos_module": "@ohos:sensor",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": true,
+                "namespace": "sensor",
+                "method": "once",
+                "profilingCategory": "device_status.sensor",
+                "ohos_module": "@ohos:sensor",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": true,
+                "namespace": "sensor",
+                "method": "off",
+                "profilingCategory": "device_status.sensor",
+                "ohos_module": "@ohos:sensor",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": true,
+                "namespace": "sensor",
+                "method": "getSingleSensor",
+                "profilingCategory": "device_status.sensor",
+                "ohos_module": "@ohos:sensor",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": true,
+                "namespace": "sensor",
+                "method": "getSensorList",
+                "profilingCategory": "device_status.sensor",
+                "ohos_module": "@ohos:sensor",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": true,
+                "namespace": "vibrator",
+                "method": "startVibration",
+                "profilingCategory": "device_status.vibrator",
+                "ohos_module": "@ohos:vibrator",
+                "dataDirection": "excluded"
+            }
+        ]
+    },
+    {
+        "systemPackage": "@kit.ContactsKit",
+        "privacyApis": [
+            {
+                "directCall": true,
+                "namespace": "contact",
+                "method": "selectContacts",
+                "permission": "ohos.permission.READ_CONTACTS",
+                "profilingCategory": "user_data.contacts",
+                "ohos_module": "@ohos:contact",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": true,
+                "namespace": "contact",
+                "method": "queryContacts",
+                "permission": "ohos.permission.READ_CONTACTS",
+                "profilingCategory": "user_data.contacts",
+                "ohos_module": "@ohos:contact",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": true,
+                "namespace": "contact",
+                "method": "queryContact",
+                "permission": "ohos.permission.READ_CONTACTS",
+                "profilingCategory": "user_data.contacts",
+                "ohos_module": "@ohos:contact",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": true,
+                "namespace": "contact",
+                "method": "queryContactsByPhoneNumber",
+                "permission": "ohos.permission.READ_CONTACTS",
+                "profilingCategory": "user_data.contacts",
+                "ohos_module": "@ohos:contact",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": true,
+                "namespace": "contact",
+                "method": "queryContactsByEmail",
+                "permission": "ohos.permission.READ_CONTACTS",
+                "profilingCategory": "user_data.contacts",
+                "ohos_module": "@ohos:contact",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": true,
+                "namespace": "contact",
+                "method": "queryGroups",
+                "permission": "ohos.permission.READ_CONTACTS",
+                "profilingCategory": "user_data.contacts",
+                "ohos_module": "@ohos:contact",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": true,
+                "namespace": "contact",
+                "method": "queryKey",
+                "permission": "ohos.permission.READ_CONTACTS",
+                "profilingCategory": "user_data.contacts",
+                "ohos_module": "@ohos:contact",
+                "dataDirection": "source"
+            }
+        ]
+    },
+    {
+        "systemPackage": "@kit.DistributedServiceKit",
+        "privacyApis": [
+            {
+                "directCall": false,
+                "namespace": "distributedDeviceManager",
+                "method": "createDeviceManager",
+                "profilingCategory": "device_identity.distributed",
+                "ohos_module": "@ohos:distributedDeviceManager",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": false,
+                "namespace": "distributedDeviceManager",
+                "method": "getLocalDeviceId",
+                "permission": "ohos.permission.DISTRIBUTED_DATASYNC",
+                "profilingCategory": "device_identity.distributed",
+                "ohos_module": "@ohos:distributedDeviceManager",
+                "dataDirection": "source"
+            }
+        ]
+    },
+    {
+        "systemPackage": "@kit.ArkUI",
+        "privacyApis": [
+            {
+                "directCall": false,
+                "namespace": "display",
+                "method": "getDefaultDisplaySync",
+                "profilingCategory": "device_identity.screen",
+                "ohos_module": "@ohos:display",
+                "dataDirection": "excluded"
+            },
+            {
+                "directCall": false,
+                "namespace": "display",
+                "method": "getAllDisplays",
+                "profilingCategory": "device_identity.screen",
+                "ohos_module": "@ohos:display",
+                "dataDirection": "excluded"
+            },
+            {
+                "directCall": false,
+                "namespace": "window",
+                "method": "getLastWindow",
+                "profilingCategory": "device_identity.screen",
+                "ohos_module": "@ohos:window",
+                "dataDirection": "excluded"
+            },
+            {
+                "directCall": false,
+                "namespace": "window",
+                "method": "getWindowProperties",
+                "profilingCategory": "device_identity.screen",
+                "ohos_module": "@ohos:window",
+                "dataDirection": "excluded"
+            },
+            {
+                "directCall": true,
+                "namespace": "mediaquery",
+                "method": "matchMediaSync",
+                "profilingCategory": "device_identity.screen",
+                "ohos_module": "@ohos:mediaquery",
+                "dataDirection": "excluded"
+            }
+        ]
+    },
+    {
+        "systemPackage": "@kit.AbilityKit",
+        "privacyApis": [
+            {
+                "directCall": false,
+                "namespace": "bundleManager",
+                "method": "getBundleInfoForSelf",
+                "profilingCategory": "app_environment",
+                "ohos_module": "@ohos:bundle.bundleManager",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": false,
+                "namespace": "bundleManager",
+                "method": "getAppInfo",
+                "profilingCategory": "app_environment",
+                "ohos_module": "@ohos:bundle.bundleManager",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": false,
+                "namespace": "bundleManager",
+                "method": "getAllBundleInfo",
+                "profilingCategory": "app_environment.installed_apps",
+                "ohos_module": "@ohos:bundle.bundleManager",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": false,
+                "namespace": "bundleManager",
+                "method": "getBundleInfo",
+                "profilingCategory": "app_environment",
+                "ohos_module": "@ohos:bundle.bundleManager",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": false,
+                "namespace": "abilityAccessCtrl",
+                "method": "checkAccessToken",
+                "profilingCategory": "app_environment.permissions",
+                "ohos_module": "@ohos:abilityAccessCtrl",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": false,
+                "namespace": "abilityAccessCtrl",
+                "method": "requestPermissionsFromUser",
+                "profilingCategory": "app_environment.permissions",
+                "ohos_module": "@ohos:abilityAccessCtrl",
+                "dataDirection": "source"
+            }
+        ]
+    },
+    {
+        "systemPackage": "@kit.MDMKit",
+        "privacyApis": [
+            {
+                "directCall": true,
+                "namespace": "deviceInfo",
+                "method": "getDeviceInfo",
+                "profilingCategory": "device_identity.hardware",
+                "ohos_module": "@ohos:enterprise.deviceInfo",
+                "dataDirection": "source"
+            }
+        ]
+    },
+    {
+        "systemPackage": "@kit.CalendarKit",
+        "privacyApis": [
+            {
+                "directCall": true,
+                "namespace": "calendarManager",
+                "method": "getCalendarManager",
+                "permission": "ohos.permission.READ_CALENDAR",
+                "profilingCategory": "user_data.calendar",
+                "ohos_module": "@ohos:calendarManager",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": true,
+                "namespace": "calendarManager",
+                "method": "getCalendar",
+                "permission": "ohos.permission.READ_CALENDAR",
+                "profilingCategory": "user_data.calendar",
+                "ohos_module": "@ohos:calendarManager",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": true,
+                "namespace": "calendarManager",
+                "method": "getAllCalendars",
+                "permission": "ohos.permission.READ_CALENDAR",
+                "profilingCategory": "user_data.calendar",
+                "ohos_module": "@ohos:calendarManager",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": true,
+                "namespace": "calendarManager",
+                "method": "createCalendar",
+                "permission": "ohos.permission.READ_CALENDAR",
+                "profilingCategory": "user_data.calendar",
+                "ohos_module": "@ohos:calendarManager",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": false,
+                "namespace": "calendarManager",
+                "method": "getEvents",
+                "permission": "ohos.permission.READ_CALENDAR",
+                "profilingCategory": "user_data.calendar",
+                "ohos_module": "@ohos:calendarManager",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": false,
+                "namespace": "calendarManager",
+                "method": "addEvent",
+                "permission": "ohos.permission.READ_CALENDAR",
+                "profilingCategory": "user_data.calendar",
+                "ohos_module": "@ohos:calendarManager",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": false,
+                "namespace": "calendarManager",
+                "method": "addEvents",
+                "permission": "ohos.permission.READ_CALENDAR",
+                "profilingCategory": "user_data.calendar",
+                "ohos_module": "@ohos:calendarManager",
+                "dataDirection": "source"
+            }
+        ]
+    },
+    {
+        "systemPackage": "@kit.MediaLibraryKit",
+        "privacyApis": [
+            {
+                "directCall": true,
+                "namespace": "photoAccessHelper",
+                "method": "getPhotoAccessHelper",
+                "profilingCategory": "user_data.media",
+                "ohos_module": "@ohos:file.photoAccessHelper",
+                "permission": "ohos.permission.READ_IMAGEVIDEO",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": false,
+                "namespace": "photoAccessHelper",
+                "method": "getAssets",
+                "profilingCategory": "user_data.media",
+                "ohos_module": "@ohos:file.photoAccessHelper",
+                "permission": "ohos.permission.READ_IMAGEVIDEO",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": false,
+                "namespace": "photoAccessHelper",
+                "method": "getAlbums",
+                "profilingCategory": "user_data.media",
+                "ohos_module": "@ohos:file.photoAccessHelper",
+                "permission": "ohos.permission.READ_IMAGEVIDEO",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": false,
+                "namespace": "photoAccessHelper",
+                "method": "createAsset",
+                "profilingCategory": "user_data.media",
+                "ohos_module": "@ohos:file.photoAccessHelper",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": false,
+                "namespace": "photoAccessHelper",
+                "method": "select",
+                "profilingCategory": "user_data.media",
+                "ohos_module": "@ohos:file.photoAccessHelper",
+                "dataDirection": "source"
+            }
+        ]
+    },
+    {
+        "systemPackage": "@kit.MediaKit",
+        "privacyApis": [
+            {
+                "directCall": true,
+                "namespace": "media",
+                "method": "createAVRecorder",
+                "profilingCategory": "media.recording",
+                "ohos_module": "@ohos:multimedia.media",
+                "permission": "ohos.permission.MICROPHONE",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": true,
+                "namespace": "media",
+                "method": "createAVPlayer",
+                "profilingCategory": "media.recording",
+                "ohos_module": "@ohos:multimedia.media",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": true,
+                "namespace": "media",
+                "method": "createAudioRecorder",
+                "profilingCategory": "media.recording",
+                "ohos_module": "@ohos:multimedia.media",
+                "permission": "ohos.permission.MICROPHONE",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": true,
+                "namespace": "media",
+                "method": "createVideoRecorder",
+                "profilingCategory": "media.recording",
+                "ohos_module": "@ohos:multimedia.media",
+                "permission": "ohos.permission.MICROPHONE",
+                "dataDirection": "source"
+            }
+        ]
+    },
+    {
+        "systemPackage": "@kit.ArkData",
+        "privacyApis": [
+            {
+                "directCall": true,
+                "namespace": "preferences",
+                "method": "getPreferences",
+                "profilingCategory": "data_storage.preferences",
+                "ohos_module": "@ohos:data.preferences",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": true,
+                "namespace": "preferences",
+                "method": "getPreferencesSync",
+                "profilingCategory": "data_storage.preferences",
+                "ohos_module": "@ohos:data.preferences",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": true,
+                "namespace": "preferences",
+                "method": "deletePreferences",
+                "profilingCategory": "data_storage.preferences",
+                "ohos_module": "@ohos:data.preferences",
+                "dataDirection": "sink"
+            },
+            {
+                "directCall": true,
+                "namespace": "relationalStore",
+                "method": "getRdbStore",
+                "profilingCategory": "data_storage.database",
+                "ohos_module": "@ohos:data.relationalStore",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": true,
+                "namespace": "relationalStore",
+                "method": "deleteRdbStore",
+                "profilingCategory": "data_storage.database",
+                "ohos_module": "@ohos:data.relationalStore",
+                "dataDirection": "sink"
+            },
+            {
+                "directCall": true,
+                "namespace": "distributedKVStore",
+                "method": "createKVManager",
+                "profilingCategory": "data_storage.distributed",
+                "ohos_module": "@ohos:data.distributedKVStore",
+                "dataDirection": "sink"
+            },
+            {
+                "directCall": false,
+                "namespace": "distributedKVStore",
+                "method": "getKVStore",
+                "profilingCategory": "data_storage.distributed",
+                "ohos_module": "@ohos:data.distributedKVStore",
+                "dataDirection": "sink"
+            }
+        ]
+    },
+    {
+        "systemPackage": "@kit.CoreFileKit",
+        "privacyApis": [
+            {
+                "directCall": true,
+                "namespace": "fs",
+                "method": "open",
+                "profilingCategory": "data_storage.filesystem",
+                "ohos_module": "@ohos:file.fs",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": true,
+                "namespace": "fs",
+                "method": "read",
+                "profilingCategory": "data_storage.filesystem",
+                "ohos_module": "@ohos:file.fs",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": true,
+                "namespace": "fs",
+                "method": "write",
+                "profilingCategory": "data_storage.filesystem",
+                "ohos_module": "@ohos:file.fs",
+                "dataDirection": "sink"
+            },
+            {
+                "directCall": true,
+                "namespace": "fs",
+                "method": "stat",
+                "profilingCategory": "data_storage.filesystem",
+                "ohos_module": "@ohos:file.fs",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": true,
+                "namespace": "fs",
+                "method": "listFile",
+                "profilingCategory": "data_storage.filesystem",
+                "ohos_module": "@ohos:file.fs",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": true,
+                "namespace": "fs",
+                "method": "access",
+                "profilingCategory": "data_storage.filesystem",
+                "ohos_module": "@ohos:file.fs",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": false,
+                "namespace": "picker",
+                "method": "select",
+                "profilingCategory": "user_data.file_picker",
+                "ohos_module": "@ohos:file.picker",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": false,
+                "namespace": "picker",
+                "method": "save",
+                "profilingCategory": "user_data.file_picker",
+                "ohos_module": "@ohos:file.picker",
+                "dataDirection": "source"
+            }
+        ]
+    },
+    {
+        "systemPackage": "@kit.PerformanceAnalysisKit",
+        "privacyApis": [
+            {
+                "directCall": true,
+                "namespace": "hiAppEvent",
+                "method": "write",
+                "profilingCategory": "app_analytics",
+                "ohos_module": "@ohos:hiAppEvent",
+                "dataDirection": "sink"
+            }
+        ]
+    },
+    {
+        "systemPackage": "@kit.NotificationKit",
+        "privacyApis": [
+            {
+                "directCall": true,
+                "namespace": "notificationManager",
+                "method": "publish",
+                "profilingCategory": "user_interaction.notification",
+                "ohos_module": "@ohos:notificationManager",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": true,
+                "namespace": "notificationManager",
+                "method": "requestEnableNotification",
+                "profilingCategory": "user_interaction.notification",
+                "ohos_module": "@ohos:notificationManager",
+                "dataDirection": "source"
+            }
+        ]
+    },
+    {
+        "systemPackage": "@kit.BackgroundTasksKit",
+        "privacyApis": [
+            {
+                "directCall": true,
+                "namespace": "backgroundTaskManager",
+                "method": "requestSuspendDelay",
+                "profilingCategory": "app_behavior.background",
+                "ohos_module": "@ohos:resourceschedule.backgroundTaskManager",
+                "dataDirection": "sink"
+            },
+            {
+                "directCall": true,
+                "namespace": "backgroundTaskManager",
+                "method": "startBackgroundRunning",
+                "profilingCategory": "app_behavior.background",
+                "ohos_module": "@ohos:resourceschedule.backgroundTaskManager",
+                "dataDirection": "sink"
+            },
+            {
+                "directCall": true,
+                "namespace": "workScheduler",
+                "method": "startWork",
+                "profilingCategory": "app_behavior.background",
+                "ohos_module": "@ohos:resourceschedule.workScheduler",
+                "dataDirection": "sink"
+            }
+        ]
+    },
+    {
+        "systemPackage": "@kit.InputMethodKit",
+        "privacyApis": [
+            {
+                "directCall": true,
+                "namespace": "inputMethod",
+                "method": "getCurrentInputMethod",
+                "profilingCategory": "user_preference.input",
+                "ohos_module": "@ohos:inputMethod",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": true,
+                "namespace": "inputMethod",
+                "method": "getSetting",
+                "profilingCategory": "user_preference.input",
+                "ohos_module": "@ohos:inputMethod",
+                "dataDirection": "source"
+            }
+        ]
+    },
+    {
+        "systemPackage": "@kit.WebKit",
+        "privacyApis": [
+            {
+                "directCall": false,
+                "namespace": "webview",
+                "method": "loadUrl",
+                "profilingCategory": "network.webview",
+                "ohos_module": "@ohos:web.webview",
+                "dataDirection": "sink"
+            },
+            {
+                "directCall": false,
+                "namespace": "webview",
+                "method": "runJavaScript",
+                "profilingCategory": "network.webview",
+                "ohos_module": "@ohos:web.webview",
+                "dataDirection": "sink"
+            },
+            {
+                "directCall": true,
+                "namespace": "webview",
+                "method": "fetchCookie",
+                "profilingCategory": "user_data.cookie",
+                "ohos_module": "@ohos:web.webview",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": true,
+                "namespace": "webview",
+                "method": "saveCookieAsync",
+                "profilingCategory": "user_data.cookie",
+                "ohos_module": "@ohos:web.webview",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": true,
+                "namespace": "webview",
+                "method": "configCookie",
+                "profilingCategory": "user_data.cookie",
+                "ohos_module": "@ohos:web.webview",
+                "dataDirection": "source"
+            }
+        ]
+    },
+    {
+        "systemPackage": "@kit.UploadDownloadKit",
+        "privacyApis": [
+            {
+                "directCall": true,
+                "namespace": "request",
+                "method": "uploadFile",
+                "permission": "ohos.permission.INTERNET",
+                "profilingCategory": "network.upload",
+                "ohos_module": "@ohos:request",
+                "dataDirection": "sink"
+            },
+            {
+                "directCall": true,
+                "namespace": "request",
+                "method": "downloadFile",
+                "permission": "ohos.permission.INTERNET",
+                "profilingCategory": "network.download",
+                "ohos_module": "@ohos:request",
+                "dataDirection": "sink"
+            }
+        ]
+    }
+]
