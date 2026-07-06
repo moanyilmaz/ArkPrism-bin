@@ -1,14 +1,14 @@
 {
-  "schemaVersion": "1.0",
+  "schemaVersion": "1.1",
   "ruleType": "native_privacy_apis",
-  "description": "Native/C/C++ sensitive API rules used by SO binary analysis.",
+  "description": "Native/C/C++ sensitive API rules used by SO binary analysis. Updated with sensitive_capiv1.json data.",
   "nativeApis": [
     {
-      "symbol": "OH_GetDeviceType",
-      "prototype": "const char *OH_GetDeviceType(void)",
-      "category": "device_info",
-      "profilingCategory": "device_identity.hardware",
-      "apiPackage": "OpenHarmony.Native.DeviceInfo",
+      "symbol": "OH_Audio_StartRecord",
+      "prototype": "unknown OH_Audio_StartRecord(...)",
+      "category": "audio_record",
+      "profilingCategory": "media.audio",
+      "apiPackage": "OpenHarmony.Native.Audio",
       "matchModes": [
         "import_symbol",
         "string_reference"
@@ -16,11 +16,11 @@
       "dataDirection": "source"
     },
     {
-      "symbol": "OH_GetManufacture",
-      "prototype": "const char *OH_GetManufacture(void)",
-      "category": "device_info",
-      "profilingCategory": "device_identity.hardware",
-      "apiPackage": "OpenHarmony.Native.DeviceInfo",
+      "symbol": "OH_AudioCapturer_GetCurrentState",
+      "prototype": "unknown OH_AudioCapturer_GetCurrentState(...)",
+      "category": "audio_record",
+      "profilingCategory": "media.audio",
+      "apiPackage": "OpenHarmony.Native.Audio",
       "matchModes": [
         "import_symbol",
         "string_reference"
@@ -28,11 +28,11 @@
       "dataDirection": "source"
     },
     {
-      "symbol": "OH_GetBrand",
-      "prototype": "const char *OH_GetBrand(void)",
-      "category": "device_info",
-      "profilingCategory": "device_identity.hardware",
-      "apiPackage": "OpenHarmony.Native.DeviceInfo",
+      "symbol": "OH_AudioCapturer_Read",
+      "prototype": "unknown OH_AudioCapturer_Read(...)",
+      "category": "audio_record",
+      "profilingCategory": "media.audio",
+      "apiPackage": "OpenHarmony.Native.Audio",
       "matchModes": [
         "import_symbol",
         "string_reference"
@@ -40,11 +40,11 @@
       "dataDirection": "source"
     },
     {
-      "symbol": "OH_GetMarketName",
-      "prototype": "const char *OH_GetMarketName(void)",
-      "category": "device_info",
-      "profilingCategory": "device_identity.hardware",
-      "apiPackage": "OpenHarmony.Native.DeviceInfo",
+      "symbol": "OH_AudioCapturer_Start",
+      "prototype": "OH_AudioStream_Result OH_AudioCapturer_Start(OH_AudioCapturer *capturer)",
+      "category": "audio_record",
+      "profilingCategory": "media.audio",
+      "apiPackage": "OpenHarmony.Native.Audio",
       "matchModes": [
         "import_symbol",
         "string_reference"
@@ -52,11 +52,11 @@
       "dataDirection": "source"
     },
     {
-      "symbol": "OH_GetProductSeries",
-      "prototype": "const char *OH_GetProductSeries(void)",
-      "category": "device_info",
-      "profilingCategory": "device_identity.hardware",
-      "apiPackage": "OpenHarmony.Native.DeviceInfo",
+      "symbol": "OH_Camera_GetCameraManager",
+      "prototype": "unknown OH_Camera_GetCameraManager(...)",
+      "category": "camera",
+      "profilingCategory": "media.camera",
+      "apiPackage": "OpenHarmony.Native.Camera",
       "matchModes": [
         "import_symbol",
         "string_reference"
@@ -64,11 +64,11 @@
       "dataDirection": "source"
     },
     {
-      "symbol": "OH_GetProductModel",
-      "prototype": "const char *OH_GetProductModel(void)",
-      "category": "device_info",
-      "profilingCategory": "device_identity.hardware",
-      "apiPackage": "OpenHarmony.Native.DeviceInfo",
+      "symbol": "OH_CameraInput_Open",
+      "prototype": "unknown OH_CameraInput_Open(...)",
+      "category": "camera",
+      "profilingCategory": "media.camera",
+      "apiPackage": "OpenHarmony.Native.Camera",
       "matchModes": [
         "import_symbol",
         "string_reference"
@@ -76,11 +76,11 @@
       "dataDirection": "source"
     },
     {
-      "symbol": "OH_GetSoftwareModel",
-      "prototype": "const char *OH_GetSoftwareModel(void)",
-      "category": "device_info",
-      "profilingCategory": "device_identity.hardware",
-      "apiPackage": "OpenHarmony.Native.DeviceInfo",
+      "symbol": "OH_CameraManager_CreateCameraInput",
+      "prototype": "unknown OH_CameraManager_CreateCameraInput(...)",
+      "category": "camera",
+      "profilingCategory": "media.camera",
+      "apiPackage": "OpenHarmony.Native.Camera",
       "matchModes": [
         "import_symbol",
         "string_reference"
@@ -88,8 +88,140 @@
       "dataDirection": "source"
     },
     {
-      "symbol": "OH_GetHardwareModel",
-      "prototype": "const char *OH_GetHardwareModel(void)",
+      "symbol": "OH_CameraManager_CreateCaptureSession",
+      "prototype": "unknown OH_CameraManager_CreateCaptureSession(...)",
+      "category": "camera",
+      "profilingCategory": "media.camera",
+      "apiPackage": "OpenHarmony.Native.Camera",
+      "matchModes": [
+        "import_symbol",
+        "string_reference"
+      ],
+      "dataDirection": "source"
+    },
+    {
+      "symbol": "OH_CameraManager_CreatePhotoOutput",
+      "prototype": "unknown OH_CameraManager_CreatePhotoOutput(...)",
+      "category": "camera",
+      "profilingCategory": "media.camera",
+      "apiPackage": "OpenHarmony.Native.Camera",
+      "matchModes": [
+        "import_symbol",
+        "string_reference"
+      ],
+      "dataDirection": "source"
+    },
+    {
+      "symbol": "OH_CameraManager_CreatePreviewOutput",
+      "prototype": "unknown OH_CameraManager_CreatePreviewOutput(...)",
+      "category": "camera",
+      "profilingCategory": "media.camera",
+      "apiPackage": "OpenHarmony.Native.Camera",
+      "matchModes": [
+        "import_symbol",
+        "string_reference"
+      ],
+      "dataDirection": "source"
+    },
+    {
+      "symbol": "OH_CameraManager_CreateVideoOutput",
+      "prototype": "unknown OH_CameraManager_CreateVideoOutput(...)",
+      "category": "camera",
+      "profilingCategory": "media.camera",
+      "apiPackage": "OpenHarmony.Native.Camera",
+      "matchModes": [
+        "import_symbol",
+        "string_reference"
+      ],
+      "dataDirection": "source"
+    },
+    {
+      "symbol": "OH_CameraManager_GetSupportedCameras",
+      "prototype": "unknown OH_CameraManager_GetSupportedCameras(...)",
+      "category": "camera",
+      "profilingCategory": "media.camera",
+      "apiPackage": "OpenHarmony.Native.Camera",
+      "matchModes": [
+        "import_symbol",
+        "string_reference"
+      ],
+      "dataDirection": "source"
+    },
+    {
+      "symbol": "OH_CaptureSession_Start",
+      "prototype": "unknown OH_CaptureSession_Start(...)",
+      "category": "camera",
+      "profilingCategory": "media.camera",
+      "apiPackage": "OpenHarmony.Native.Camera",
+      "matchModes": [
+        "import_symbol",
+        "string_reference"
+      ],
+      "dataDirection": "source"
+    },
+    {
+      "symbol": "OH_PhotoOutput_Capture",
+      "prototype": "unknown OH_PhotoOutput_Capture(...)",
+      "category": "camera",
+      "profilingCategory": "media.camera",
+      "apiPackage": "OpenHarmony.Native.Camera",
+      "matchModes": [
+        "import_symbol",
+        "string_reference"
+      ],
+      "dataDirection": "source"
+    },
+    {
+      "symbol": "OH_PreviewOutput_Start",
+      "prototype": "unknown OH_PreviewOutput_Start(...)",
+      "category": "camera",
+      "profilingCategory": "media.camera",
+      "apiPackage": "OpenHarmony.Native.Camera",
+      "matchModes": [
+        "import_symbol",
+        "string_reference"
+      ],
+      "dataDirection": "source"
+    },
+    {
+      "symbol": "OH_VideoOutput_Start",
+      "prototype": "unknown OH_VideoOutput_Start(...)",
+      "category": "camera",
+      "profilingCategory": "media.camera",
+      "apiPackage": "OpenHarmony.Native.Camera",
+      "matchModes": [
+        "import_symbol",
+        "string_reference"
+      ],
+      "dataDirection": "source"
+    },
+    {
+      "symbol": "GetDeviceId",
+      "prototype": "unknown GetDeviceId(...)",
+      "category": "device_identifier",
+      "profilingCategory": "device_identity.unique_id",
+      "apiPackage": "OpenHarmony.Native.DeviceIdentifier",
+      "matchModes": [
+        "import_symbol",
+        "string_reference"
+      ],
+      "dataDirection": "source"
+    },
+    {
+      "symbol": "OH_GetDeviceId",
+      "prototype": "unknown OH_GetDeviceId(...)",
+      "category": "device_identifier",
+      "profilingCategory": "device_identity.unique_id",
+      "apiPackage": "OpenHarmony.Native.DeviceIdentifier",
+      "matchModes": [
+        "import_symbol",
+        "string_reference"
+      ],
+      "dataDirection": "source"
+    },
+    {
+      "symbol": "OH_GetAbiList",
+      "prototype": "const char *OH_GetAbiList(void)",
       "category": "device_info",
       "profilingCategory": "device_identity.hardware",
       "apiPackage": "OpenHarmony.Native.DeviceInfo",
@@ -112,8 +244,8 @@
       "dataDirection": "source"
     },
     {
-      "symbol": "OH_GetAbiList",
-      "prototype": "const char *OH_GetAbiList(void)",
+      "symbol": "OH_GetBrand",
+      "prototype": "const char *OH_GetBrand(void)",
       "category": "device_info",
       "profilingCategory": "device_identity.hardware",
       "apiPackage": "OpenHarmony.Native.DeviceInfo",
@@ -124,8 +256,8 @@
       "dataDirection": "source"
     },
     {
-      "symbol": "OH_GetSecurityPatchTag",
-      "prototype": "const char *OH_GetSecurityPatchTag(void)",
+      "symbol": "OH_GetBuildHost",
+      "prototype": "const char *OH_GetBuildHost(void)",
       "category": "device_info",
       "profilingCategory": "device_identity.software",
       "apiPackage": "OpenHarmony.Native.DeviceInfo",
@@ -136,8 +268,8 @@
       "dataDirection": "source"
     },
     {
-      "symbol": "OH_GetDisplayVersion",
-      "prototype": "const char *OH_GetDisplayVersion(void)",
+      "symbol": "OH_GetBuildRootHash",
+      "prototype": "const char *OH_GetBuildRootHash(void)",
       "category": "device_info",
       "profilingCategory": "device_identity.software",
       "apiPackage": "OpenHarmony.Native.DeviceInfo",
@@ -148,68 +280,8 @@
       "dataDirection": "source"
     },
     {
-      "symbol": "OH_GetIncrementalVersion",
-      "prototype": "const char *OH_GetIncrementalVersion(void)",
-      "category": "device_info",
-      "profilingCategory": "device_identity.software",
-      "apiPackage": "OpenHarmony.Native.DeviceInfo",
-      "matchModes": [
-        "import_symbol",
-        "string_reference"
-      ],
-      "dataDirection": "source"
-    },
-    {
-      "symbol": "OH_GetOsReleaseType",
-      "prototype": "const char *OH_GetOsReleaseType(void)",
-      "category": "device_info",
-      "profilingCategory": "device_identity.software",
-      "apiPackage": "OpenHarmony.Native.DeviceInfo",
-      "matchModes": [
-        "import_symbol",
-        "string_reference"
-      ],
-      "dataDirection": "source"
-    },
-    {
-      "symbol": "OH_GetOSFullName",
-      "prototype": "const char *OH_GetOSFullName(void)",
-      "category": "device_info",
-      "profilingCategory": "device_identity.software",
-      "apiPackage": "OpenHarmony.Native.DeviceInfo",
-      "matchModes": [
-        "import_symbol",
-        "string_reference"
-      ],
-      "dataDirection": "source"
-    },
-    {
-      "symbol": "OH_GetSdkApiVersion",
-      "prototype": "int OH_GetSdkApiVersion(void)",
-      "category": "device_info",
-      "profilingCategory": "device_identity.software",
-      "apiPackage": "OpenHarmony.Native.DeviceInfo",
-      "matchModes": [
-        "import_symbol",
-        "string_reference"
-      ],
-      "dataDirection": "source"
-    },
-    {
-      "symbol": "OH_GetFirstApiVersion",
-      "prototype": "int OH_GetFirstApiVersion(void)",
-      "category": "device_info",
-      "profilingCategory": "device_identity.software",
-      "apiPackage": "OpenHarmony.Native.DeviceInfo",
-      "matchModes": [
-        "import_symbol",
-        "string_reference"
-      ],
-      "dataDirection": "source"
-    },
-    {
-      "symbol": "OH_GetVersionId",
-      "prototype": "const char *OH_GetVersionId(void)",
+      "symbol": "OH_GetBuildTime",
+      "prototype": "const char *OH_GetBuildTime(void)",
       "category": "device_info",
       "profilingCategory": "device_identity.software",
       "apiPackage": "OpenHarmony.Native.DeviceInfo",
@@ -244,10 +316,10 @@
       "dataDirection": "source"
     },
     {
-      "symbol": "OH_GetBuildHost",
-      "prototype": "const char *OH_GetBuildHost(void)",
+      "symbol": "OH_GetDeviceType",
+      "prototype": "const char *OH_GetDeviceType(void)",
       "category": "device_info",
-      "profilingCategory": "device_identity.software",
+      "profilingCategory": "device_identity.hardware",
       "apiPackage": "OpenHarmony.Native.DeviceInfo",
       "matchModes": [
         "import_symbol",
@@ -256,44 +328,8 @@
       "dataDirection": "source"
     },
     {
-      "symbol": "OH_GetBuildTime",
-      "prototype": "const char *OH_GetBuildTime(void)",
-      "category": "device_info",
-      "profilingCategory": "device_identity.software",
-      "apiPackage": "OpenHarmony.Native.DeviceInfo",
-      "matchModes": [
-        "import_symbol",
-        "string_reference"
-      ],
-      "dataDirection": "source"
-    },
-    {
-      "symbol": "OH_GetBuildRootHash",
-      "prototype": "const char *OH_GetBuildRootHash(void)",
-      "category": "device_info",
-      "profilingCategory": "device_identity.software",
-      "apiPackage": "OpenHarmony.Native.DeviceInfo",
-      "matchModes": [
-        "import_symbol",
-        "string_reference"
-      ],
-      "dataDirection": "source"
-    },
-    {
-      "symbol": "OH_GetDistributionOSName",
-      "prototype": "const char *OH_GetDistributionOSName(void)",
-      "category": "device_info",
-      "profilingCategory": "device_identity.software",
-      "apiPackage": "OpenHarmony.Native.DeviceInfo",
-      "matchModes": [
-        "import_symbol",
-        "string_reference"
-      ],
-      "dataDirection": "source"
-    },
-    {
-      "symbol": "OH_GetDistributionOSVersion",
-      "prototype": "const char *OH_GetDistributionOSVersion(void)",
+      "symbol": "OH_GetDisplayVersion",
+      "prototype": "const char *OH_GetDisplayVersion(void)",
       "category": "device_info",
       "profilingCategory": "device_identity.software",
       "apiPackage": "OpenHarmony.Native.DeviceInfo",
@@ -316,6 +352,18 @@
       "dataDirection": "source"
     },
     {
+      "symbol": "OH_GetDistributionOSName",
+      "prototype": "const char *OH_GetDistributionOSName(void)",
+      "category": "device_info",
+      "profilingCategory": "device_identity.software",
+      "apiPackage": "OpenHarmony.Native.DeviceInfo",
+      "matchModes": [
+        "import_symbol",
+        "string_reference"
+      ],
+      "dataDirection": "source"
+    },
+    {
       "symbol": "OH_GetDistributionOSReleaseType",
       "prototype": "const char *OH_GetDistributionOSReleaseType(void)",
       "category": "device_info",
@@ -328,11 +376,11 @@
       "dataDirection": "source"
     },
     {
-      "symbol": "GetDeviceId",
-      "prototype": "unknown GetDeviceId(...)",
-      "category": "device_identifier",
-      "profilingCategory": "device_identity.unique_id",
-      "apiPackage": "OpenHarmony.Native.DeviceIdentifier",
+      "symbol": "OH_GetDistributionOSVersion",
+      "prototype": "const char *OH_GetDistributionOSVersion(void)",
+      "category": "device_info",
+      "profilingCategory": "device_identity.software",
+      "apiPackage": "OpenHarmony.Native.DeviceInfo",
       "matchModes": [
         "import_symbol",
         "string_reference"
@@ -340,11 +388,179 @@
       "dataDirection": "source"
     },
     {
-      "symbol": "OH_GetDeviceId",
-      "prototype": "unknown OH_GetDeviceId(...)",
-      "category": "device_identifier",
-      "profilingCategory": "device_identity.unique_id",
-      "apiPackage": "OpenHarmony.Native.DeviceIdentifier",
+      "symbol": "OH_GetFirstApiVersion",
+      "prototype": "int OH_GetFirstApiVersion(void)",
+      "category": "device_info",
+      "profilingCategory": "device_identity.software",
+      "apiPackage": "OpenHarmony.Native.DeviceInfo",
+      "matchModes": [
+        "import_symbol",
+        "string_reference"
+      ],
+      "dataDirection": "source"
+    },
+    {
+      "symbol": "OH_GetHardwareModel",
+      "prototype": "const char *OH_GetHardwareModel(void)",
+      "category": "device_info",
+      "profilingCategory": "device_identity.hardware",
+      "apiPackage": "OpenHarmony.Native.DeviceInfo",
+      "matchModes": [
+        "import_symbol",
+        "string_reference"
+      ],
+      "dataDirection": "source"
+    },
+    {
+      "symbol": "OH_GetIncrementalVersion",
+      "prototype": "const char *OH_GetIncrementalVersion(void)",
+      "category": "device_info",
+      "profilingCategory": "device_identity.software",
+      "apiPackage": "OpenHarmony.Native.DeviceInfo",
+      "matchModes": [
+        "import_symbol",
+        "string_reference"
+      ],
+      "dataDirection": "source"
+    },
+    {
+      "symbol": "OH_GetManufacture",
+      "prototype": "const char *OH_GetManufacture(void)",
+      "category": "device_info",
+      "profilingCategory": "device_identity.hardware",
+      "apiPackage": "OpenHarmony.Native.DeviceInfo",
+      "matchModes": [
+        "import_symbol",
+        "string_reference"
+      ],
+      "dataDirection": "source"
+    },
+    {
+      "symbol": "OH_GetMarketName",
+      "prototype": "const char *OH_GetMarketName(void)",
+      "category": "device_info",
+      "profilingCategory": "device_identity.hardware",
+      "apiPackage": "OpenHarmony.Native.DeviceInfo",
+      "matchModes": [
+        "import_symbol",
+        "string_reference"
+      ],
+      "dataDirection": "source"
+    },
+    {
+      "symbol": "OH_GetOSFullName",
+      "prototype": "const char *OH_GetOSFullName(void)",
+      "category": "device_info",
+      "profilingCategory": "device_identity.software",
+      "apiPackage": "OpenHarmony.Native.DeviceInfo",
+      "matchModes": [
+        "import_symbol",
+        "string_reference"
+      ],
+      "dataDirection": "source"
+    },
+    {
+      "symbol": "OH_GetOsReleaseType",
+      "prototype": "const char *OH_GetOsReleaseType(void)",
+      "category": "device_info",
+      "profilingCategory": "device_identity.software",
+      "apiPackage": "OpenHarmony.Native.DeviceInfo",
+      "matchModes": [
+        "import_symbol",
+        "string_reference"
+      ],
+      "dataDirection": "source"
+    },
+    {
+      "symbol": "OH_GetProductModel",
+      "prototype": "const char *OH_GetProductModel(void)",
+      "category": "device_info",
+      "profilingCategory": "device_identity.hardware",
+      "apiPackage": "OpenHarmony.Native.DeviceInfo",
+      "matchModes": [
+        "import_symbol",
+        "string_reference"
+      ],
+      "dataDirection": "source"
+    },
+    {
+      "symbol": "OH_GetProductSeries",
+      "prototype": "const char *OH_GetProductSeries(void)",
+      "category": "device_info",
+      "profilingCategory": "device_identity.hardware",
+      "apiPackage": "OpenHarmony.Native.DeviceInfo",
+      "matchModes": [
+        "import_symbol",
+        "string_reference"
+      ],
+      "dataDirection": "source"
+    },
+    {
+      "symbol": "OH_GetSdkApiVersion",
+      "prototype": "int OH_GetSdkApiVersion(void)",
+      "category": "device_info",
+      "profilingCategory": "device_identity.software",
+      "apiPackage": "OpenHarmony.Native.DeviceInfo",
+      "matchModes": [
+        "import_symbol",
+        "string_reference"
+      ],
+      "dataDirection": "source"
+    },
+    {
+      "symbol": "OH_GetSecurityPatchTag",
+      "prototype": "const char *OH_GetSecurityPatchTag(void)",
+      "category": "device_info",
+      "profilingCategory": "device_identity.software",
+      "apiPackage": "OpenHarmony.Native.DeviceInfo",
+      "matchModes": [
+        "import_symbol",
+        "string_reference"
+      ],
+      "dataDirection": "source"
+    },
+    {
+      "symbol": "OH_GetSoftwareModel",
+      "prototype": "const char *OH_GetSoftwareModel(void)",
+      "category": "device_info",
+      "profilingCategory": "device_identity.hardware",
+      "apiPackage": "OpenHarmony.Native.DeviceInfo",
+      "matchModes": [
+        "import_symbol",
+        "string_reference"
+      ],
+      "dataDirection": "source"
+    },
+    {
+      "symbol": "OH_GetVersionId",
+      "prototype": "const char *OH_GetVersionId(void)",
+      "category": "device_info",
+      "profilingCategory": "device_identity.software",
+      "apiPackage": "OpenHarmony.Native.DeviceInfo",
+      "matchModes": [
+        "import_symbol",
+        "string_reference"
+      ],
+      "dataDirection": "source"
+    },
+    {
+      "symbol": "OH_NativeDisplayManager_GetDefaultDisplayHeight",
+      "prototype": "NativeDisplayManager_ErrorCode OH_NativeDisplayManager_GetDefaultDisplayHeight(int32_t *displayHeight)",
+      "category": "display",
+      "profilingCategory": "device_identity.screen",
+      "apiPackage": "OpenHarmony.Native.DisplayManager",
+      "matchModes": [
+        "import_symbol",
+        "string_reference"
+      ],
+      "dataDirection": "source"
+    },
+    {
+      "symbol": "OH_NativeDisplayManager_GetDefaultDisplayWidth",
+      "prototype": "NativeDisplayManager_ErrorCode OH_NativeDisplayManager_GetDefaultDisplayWidth(int32_t *displayWidth)",
+      "category": "display",
+      "profilingCategory": "device_identity.screen",
+      "apiPackage": "OpenHarmony.Native.DisplayManager",
       "matchModes": [
         "import_symbol",
         "string_reference"
@@ -354,30 +570,6 @@
     {
       "symbol": "OH_Location_Get",
       "prototype": "unknown OH_Location_Get(...)",
-      "category": "location",
-      "profilingCategory": "location",
-      "apiPackage": "OpenHarmony.Native.Location",
-      "matchModes": [
-        "import_symbol",
-        "string_reference"
-      ],
-      "dataDirection": "source"
-    },
-    {
-      "symbol": "OH_Location_StartLocating",
-      "prototype": "unknown OH_Location_StartLocating(...)",
-      "category": "location",
-      "profilingCategory": "location",
-      "apiPackage": "OpenHarmony.Native.Location",
-      "matchModes": [
-        "import_symbol",
-        "string_reference"
-      ],
-      "dataDirection": "source"
-    },
-    {
-      "symbol": "OH_Location_StopLocating",
-      "prototype": "unknown OH_Location_StopLocating(...)",
       "category": "location",
       "profilingCategory": "location",
       "apiPackage": "OpenHarmony.Native.Location",
@@ -412,11 +604,11 @@
       "dataDirection": "source"
     },
     {
-      "symbol": "OH_Audio_StartRecord",
-      "prototype": "unknown OH_Audio_StartRecord(...)",
-      "category": "audio_record",
-      "profilingCategory": "media.audio",
-      "apiPackage": "OpenHarmony.Native.Audio",
+      "symbol": "OH_Location_StartLocating",
+      "prototype": "Location_ResultCode OH_Location_StartLocating(const Location_RequestConfig* requestConfig)",
+      "category": "location",
+      "profilingCategory": "location",
+      "apiPackage": "OpenHarmony.Native.Location",
       "matchModes": [
         "import_symbol",
         "string_reference"
@@ -424,11 +616,11 @@
       "dataDirection": "source"
     },
     {
-      "symbol": "OH_AudioCapturer_Start",
-      "prototype": "OH_AudioStream_Result OH_AudioCapturer_Start(OH_AudioCapturer *capturer)",
-      "category": "audio_record",
-      "profilingCategory": "media.audio",
-      "apiPackage": "OpenHarmony.Native.Audio",
+      "symbol": "OH_Location_StopLocating",
+      "prototype": "unknown OH_Location_StopLocating(...)",
+      "category": "location",
+      "profilingCategory": "location",
+      "apiPackage": "OpenHarmony.Native.Location",
       "matchModes": [
         "import_symbol",
         "string_reference"
@@ -436,11 +628,11 @@
       "dataDirection": "source"
     },
     {
-      "symbol": "OH_AudioCapturer_Read",
-      "prototype": "unknown OH_AudioCapturer_Read(...)",
-      "category": "audio_record",
-      "profilingCategory": "media.audio",
-      "apiPackage": "OpenHarmony.Native.Audio",
+      "symbol": "OH_LocationInfo_GetAdditionalInfo",
+      "prototype": "Location_ResultCode OH_LocationInfo_GetAdditionalInfo(Location_Info* location, char* additionalInfo, uint32_t length)",
+      "category": "Location",
+      "profilingCategory": "location",
+      "apiPackage": "OpenHarmony.Native.Location",
       "matchModes": [
         "import_symbol",
         "string_reference"
@@ -448,11 +640,11 @@
       "dataDirection": "source"
     },
     {
-      "symbol": "OH_AudioCapturer_GetCurrentState",
-      "prototype": "unknown OH_AudioCapturer_GetCurrentState(...)",
-      "category": "audio_record",
-      "profilingCategory": "media.audio",
-      "apiPackage": "OpenHarmony.Native.Audio",
+      "symbol": "OH_LocationInfo_GetBasicInfo",
+      "prototype": "Location_BasicInfo OH_LocationInfo_GetBasicInfo(Location_Info* location)",
+      "category": "Location",
+      "profilingCategory": "location",
+      "apiPackage": "OpenHarmony.Native.Location",
       "matchModes": [
         "import_symbol",
         "string_reference"
@@ -460,11 +652,11 @@
       "dataDirection": "source"
     },
     {
-      "symbol": "OH_Camera_GetCameraManager",
-      "prototype": "unknown OH_Camera_GetCameraManager(...)",
-      "category": "camera",
-      "profilingCategory": "media.camera",
-      "apiPackage": "OpenHarmony.Native.Camera",
+      "symbol": "OH_Telephony_GetNetworkState",
+      "prototype": "Telephony_RadioResult OH_Telephony_GetNetworkState(Telephony_NetworkState *state)",
+      "category": "Network",
+      "profilingCategory": "network.cellular",
+      "apiPackage": "OpenHarmony.Native.Telephony",
       "matchModes": [
         "import_symbol",
         "string_reference"
@@ -472,11 +664,11 @@
       "dataDirection": "source"
     },
     {
-      "symbol": "OH_CameraManager_GetSupportedCameras",
-      "prototype": "unknown OH_CameraManager_GetSupportedCameras(...)",
-      "category": "camera",
-      "profilingCategory": "media.camera",
-      "apiPackage": "OpenHarmony.Native.Camera",
+      "symbol": "OH_Telephony_GetNetworkStateForSlot",
+      "prototype": "Telephony_RadioResult OH_Telephony_GetNetworkStateForSlot(int32_t slotId, Telephony_NetworkState *state)",
+      "category": "Network",
+      "profilingCategory": "network.cellular",
+      "apiPackage": "OpenHarmony.Native.Telephony",
       "matchModes": [
         "import_symbol",
         "string_reference"
@@ -484,11 +676,59 @@
       "dataDirection": "source"
     },
     {
-      "symbol": "OH_CameraManager_CreateCameraInput",
-      "prototype": "unknown OH_CameraManager_CreateCameraInput(...)",
-      "category": "camera",
-      "profilingCategory": "media.camera",
-      "apiPackage": "OpenHarmony.Native.Camera",
+      "symbol": "OH_NetConn_GetConnectionProperties",
+      "prototype": "unknown OH_NetConn_GetConnectionProperties(...)",
+      "category": "network_info",
+      "profilingCategory": "network.connectivity",
+      "apiPackage": "OpenHarmony.Native.Network",
+      "matchModes": [
+        "import_symbol",
+        "string_reference"
+      ],
+      "dataDirection": "sink"
+    },
+    {
+      "symbol": "OH_NetConn_GetDefaultNet",
+      "prototype": "unknown OH_NetConn_GetDefaultNet(...)",
+      "category": "network_info",
+      "profilingCategory": "network.connectivity",
+      "apiPackage": "OpenHarmony.Native.Network",
+      "matchModes": [
+        "import_symbol",
+        "string_reference"
+      ],
+      "dataDirection": "sink"
+    },
+    {
+      "symbol": "OH_NetConn_GetNetCapabilities",
+      "prototype": "unknown OH_NetConn_GetNetCapabilities(...)",
+      "category": "network_info",
+      "profilingCategory": "network.connectivity",
+      "apiPackage": "OpenHarmony.Native.Network",
+      "matchModes": [
+        "import_symbol",
+        "string_reference"
+      ],
+      "dataDirection": "sink"
+    },
+    {
+      "symbol": "OH_NetConn_HasDefaultNet",
+      "prototype": "unknown OH_NetConn_HasDefaultNet(...)",
+      "category": "network_info",
+      "profilingCategory": "network.connectivity",
+      "apiPackage": "OpenHarmony.Native.Network",
+      "matchModes": [
+        "import_symbol",
+        "string_reference"
+      ],
+      "dataDirection": "sink"
+    },
+    {
+      "symbol": "OH_Pasteboard_Create",
+      "prototype": "unknown OH_Pasteboard_Create(...)",
+      "category": "pasteboard",
+      "profilingCategory": "user_data.clipboard",
+      "apiPackage": "OpenHarmony.Native.Pasteboard",
       "matchModes": [
         "import_symbol",
         "string_reference"
@@ -496,11 +736,11 @@
       "dataDirection": "source"
     },
     {
-      "symbol": "OH_CameraInput_Open",
-      "prototype": "unknown OH_CameraInput_Open(...)",
-      "category": "camera",
-      "profilingCategory": "media.camera",
-      "apiPackage": "OpenHarmony.Native.Camera",
+      "symbol": "OH_Pasteboard_GetData",
+      "prototype": "unknown OH_Pasteboard_GetData(...)",
+      "category": "pasteboard",
+      "profilingCategory": "user_data.clipboard",
+      "apiPackage": "OpenHarmony.Native.Pasteboard",
       "matchModes": [
         "import_symbol",
         "string_reference"
@@ -508,95 +748,11 @@
       "dataDirection": "source"
     },
     {
-      "symbol": "OH_CameraManager_CreatePreviewOutput",
-      "prototype": "unknown OH_CameraManager_CreatePreviewOutput(...)",
-      "category": "camera",
-      "profilingCategory": "media.camera",
-      "apiPackage": "OpenHarmony.Native.Camera",
-      "matchModes": [
-        "import_symbol",
-        "string_reference"
-      ],
-      "dataDirection": "source"
-    },
-    {
-      "symbol": "OH_CameraManager_CreatePhotoOutput",
-      "prototype": "unknown OH_CameraManager_CreatePhotoOutput(...)",
-      "category": "camera",
-      "profilingCategory": "media.camera",
-      "apiPackage": "OpenHarmony.Native.Camera",
-      "matchModes": [
-        "import_symbol",
-        "string_reference"
-      ],
-      "dataDirection": "source"
-    },
-    {
-      "symbol": "OH_CameraManager_CreateVideoOutput",
-      "prototype": "unknown OH_CameraManager_CreateVideoOutput(...)",
-      "category": "camera",
-      "profilingCategory": "media.camera",
-      "apiPackage": "OpenHarmony.Native.Camera",
-      "matchModes": [
-        "import_symbol",
-        "string_reference"
-      ],
-      "dataDirection": "source"
-    },
-    {
-      "symbol": "OH_CameraManager_CreateCaptureSession",
-      "prototype": "unknown OH_CameraManager_CreateCaptureSession(...)",
-      "category": "camera",
-      "profilingCategory": "media.camera",
-      "apiPackage": "OpenHarmony.Native.Camera",
-      "matchModes": [
-        "import_symbol",
-        "string_reference"
-      ],
-      "dataDirection": "source"
-    },
-    {
-      "symbol": "OH_CaptureSession_Start",
-      "prototype": "unknown OH_CaptureSession_Start(...)",
-      "category": "camera",
-      "profilingCategory": "media.camera",
-      "apiPackage": "OpenHarmony.Native.Camera",
-      "matchModes": [
-        "import_symbol",
-        "string_reference"
-      ],
-      "dataDirection": "source"
-    },
-    {
-      "symbol": "OH_PreviewOutput_Start",
-      "prototype": "unknown OH_PreviewOutput_Start(...)",
-      "category": "camera",
-      "profilingCategory": "media.camera",
-      "apiPackage": "OpenHarmony.Native.Camera",
-      "matchModes": [
-        "import_symbol",
-        "string_reference"
-      ],
-      "dataDirection": "source"
-    },
-    {
-      "symbol": "OH_PhotoOutput_Capture",
-      "prototype": "unknown OH_PhotoOutput_Capture(...)",
-      "category": "camera",
-      "profilingCategory": "media.camera",
-      "apiPackage": "OpenHarmony.Native.Camera",
-      "matchModes": [
-        "import_symbol",
-        "string_reference"
-      ],
-      "dataDirection": "source"
-    },
-    {
-      "symbol": "OH_VideoOutput_Start",
-      "prototype": "unknown OH_VideoOutput_Start(...)",
-      "category": "camera",
-      "profilingCategory": "media.camera",
-      "apiPackage": "OpenHarmony.Native.Camera",
+      "symbol": "OH_Pasteboard_HasData",
+      "prototype": "unknown OH_Pasteboard_HasData(...)",
+      "category": "pasteboard",
+      "profilingCategory": "user_data.clipboard",
+      "apiPackage": "OpenHarmony.Native.Pasteboard",
       "matchModes": [
         "import_symbol",
         "string_reference"
@@ -640,59 +796,11 @@
       "dataDirection": "source"
     },
     {
-      "symbol": "OH_NetConn_HasDefaultNet",
-      "prototype": "unknown OH_NetConn_HasDefaultNet(...)",
-      "category": "network_info",
-      "profilingCategory": "network.connectivity",
-      "apiPackage": "OpenHarmony.Native.Network",
-      "matchModes": [
-        "import_symbol",
-        "string_reference"
-      ],
-      "dataDirection": "sink"
-    },
-    {
-      "symbol": "OH_NetConn_GetDefaultNet",
-      "prototype": "unknown OH_NetConn_GetDefaultNet(...)",
-      "category": "network_info",
-      "profilingCategory": "network.connectivity",
-      "apiPackage": "OpenHarmony.Native.Network",
-      "matchModes": [
-        "import_symbol",
-        "string_reference"
-      ],
-      "dataDirection": "sink"
-    },
-    {
-      "symbol": "OH_NetConn_GetConnectionProperties",
-      "prototype": "unknown OH_NetConn_GetConnectionProperties(...)",
-      "category": "network_info",
-      "profilingCategory": "network.connectivity",
-      "apiPackage": "OpenHarmony.Native.Network",
-      "matchModes": [
-        "import_symbol",
-        "string_reference"
-      ],
-      "dataDirection": "sink"
-    },
-    {
-      "symbol": "OH_NetConn_GetNetCapabilities",
-      "prototype": "unknown OH_NetConn_GetNetCapabilities(...)",
-      "category": "network_info",
-      "profilingCategory": "network.connectivity",
-      "apiPackage": "OpenHarmony.Native.Network",
-      "matchModes": [
-        "import_symbol",
-        "string_reference"
-      ],
-      "dataDirection": "sink"
-    },
-    {
-      "symbol": "OH_Pasteboard_Create",
-      "prototype": "unknown OH_Pasteboard_Create(...)",
-      "category": "pasteboard",
-      "profilingCategory": "user_data.clipboard",
-      "apiPackage": "OpenHarmony.Native.Pasteboard",
+      "symbol": "OH_i18n_GetTimeZoneRules",
+      "prototype": "I18n_ErrorCode OH_i18n_GetTimeZoneRules(const char* timeZoneID, TimeZoneRules* rules)",
+      "category": "timezone",
+      "profilingCategory": "user_preference.time",
+      "apiPackage": "OpenHarmony.Native.TimeService",
       "matchModes": [
         "import_symbol",
         "string_reference"
@@ -700,11 +808,11 @@
       "dataDirection": "source"
     },
     {
-      "symbol": "OH_Pasteboard_GetData",
-      "prototype": "unknown OH_Pasteboard_GetData(...)",
-      "category": "pasteboard",
-      "profilingCategory": "user_data.clipboard",
-      "apiPackage": "OpenHarmony.Native.Pasteboard",
+      "symbol": "OH_TimeService_GetTimeZone",
+      "prototype": "TimeService_ErrCode OH_TimeService_GetTimeZone(char *timeZone, uint32_t len)",
+      "category": "timezone",
+      "profilingCategory": "user_preference.time",
+      "apiPackage": "OpenHarmony.Native.TimeService",
       "matchModes": [
         "import_symbol",
         "string_reference"
@@ -712,11 +820,23 @@
       "dataDirection": "source"
     },
     {
-      "symbol": "OH_Pasteboard_HasData",
-      "prototype": "unknown OH_Pasteboard_HasData(...)",
-      "category": "pasteboard",
-      "profilingCategory": "user_data.clipboard",
-      "apiPackage": "OpenHarmony.Native.Pasteboard",
+      "symbol": "OH_Wifi_GetDeviceMacAddress",
+      "prototype": "Wifi_ResultCode OH_Wifi_GetDeviceMacAddress(char *macAddr, unsigned int *macAddrLen)",
+      "category": "WiFi",
+      "profilingCategory": "network.wifi",
+      "apiPackage": "OpenHarmony.Native.WiFi",
+      "matchModes": [
+        "import_symbol",
+        "string_reference"
+      ],
+      "dataDirection": "source"
+    },
+    {
+      "symbol": "OH_Wifi_GetLinkedInfo",
+      "prototype": "Wifi_ResultCode OH_Wifi_GetLinkedInfo(OH_WifiLinkedInfo *info)",
+      "category": "WiFi",
+      "profilingCategory": "network.wifi",
+      "apiPackage": "OpenHarmony.Native.WiFi",
       "matchModes": [
         "import_symbol",
         "string_reference"
