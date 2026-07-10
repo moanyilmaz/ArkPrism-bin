@@ -104,6 +104,25 @@ public class PreciseSensitiveApiScanner {
         public transient Stmt stmtObj;
     }
 
+    /**
+     * Provenance record: tracks which SensitiveApiHit produced each deduplicated ApiUsage,
+     * and which Stmt object is the IR-level source for call chain construction.
+     *
+     * This eliminates the need for the fragile string-key cross-matching between
+     * the dedup loop and the sourceStmtToApiUsageIndex mapping loop. Instead of
+     * reconstructing the Hit→Usage relationship via string comparison, we maintain
+     * a direct object reference from each deduplicated usage back to its originating hit.
+     */
+    public static class ApiUsageProvenance {
+        public final SensitiveApiHit originatingHit;
+        public final Stmt sourceStmt; // May be null if hit has no Stmt object
+
+        public ApiUsageProvenance(SensitiveApiHit hit) {
+            this.originatingHit = hit;
+            this.sourceStmt = (hit != null && hit.stmtObj != null) ? hit.stmtObj : null;
+        }
+    }
+
     public static class ResolvedNameInfo {
         public String original;
         public String sourcePrefix;
@@ -216,12 +235,26 @@ public class PreciseSensitiveApiScanner {
 
             transformWithSSA(hiFile);
 
+            // Build call graph BEFORE scanning so Andersen PTA is available
+            // for namespace inference during indirect call matching.
+            // The same CG will be reused for chain extraction in buildCallChainsForFile.
+            CallGraph cg = null;
+            try {
+                Logger.log("[*] Building call graph with ANDERSEN for scanning...");
+                cg = Stage.createCallGraph(hiFile, CallGraph.CGBuildMethod.ANDERSEN, true);
+            } catch (Throwable t) {
+                String msg = "Call graph construction failed for " + abcFile.getAbsolutePath() + ": " + t.getMessage();
+                result.warnings.add(msg);
+                Logger.error("[-] " + msg);
+            }
+
             List<SensitiveApiHit> hits = scanHiFile(
                     hiFile,
                     abcFile.getName(),
                     directRules,
                     indirectRules,
-                    constantRules
+                    constantRules,
+                    cg
             );
             Logger.log("    [*] V1 raw hits: " + hits.size());
 
@@ -232,11 +265,13 @@ public class PreciseSensitiveApiScanner {
 
             Logger.log("[+] Current ABC sensitive API hits: " + hits.size());
 
-            // Deduplicate ApiUsage objects to avoid duplicates from multiple detection passes
+            // Deduplicate ApiUsage objects with direct provenance tracking.
+            // Each deduplicated usage retains a reference to its originating hit,
+            // eliminating the need for the fragile string-key cross-matching that
+            // previously caused ~37.7% of API usages to lose their call chains.
             List<UnifiedPrivacyReport.ApiUsage> dedupedUsages = new ArrayList<>();
+            Map<UnifiedPrivacyReport.ApiUsage, ApiUsageProvenance> usageToProvenance = new LinkedHashMap<>();
             Set<String> seenUsageKeys = new HashSet<>();
-
-            Map<Stmt, Integer> sourceStmtToApiUsageIndex = new LinkedHashMap<>();
             Set<Stmt> sinkStmts = new LinkedHashSet<>();
 
             for (SensitiveApiHit hit : hits) {
@@ -252,42 +287,43 @@ public class PreciseSensitiveApiScanner {
 
                 if (seenUsageKeys.add(usageKey)) {
                     dedupedUsages.add(usage);
-                }
-            }
+                    usageToProvenance.put(usage, new ApiUsageProvenance(hit));
 
-            for (UnifiedPrivacyReport.ApiUsage usage : dedupedUsages) {
-                result.arktsApiUsages.add(usage);
-
-                int usageIndex = nextApiUsageIndex++;
-                // Find the corresponding hit for BODY_HIT layer
-                for (SensitiveApiHit hit : hits) {
-                    if ("BODY_HIT".equals(hit.layer) && hit.stmtObj != null) {
-                        String hitKey = (hit.stmtText != null ? hit.stmtText : "")
-                                + "|" + (hit.function != null ? hit.function : "");
-                        String usageKey = (usage.code != null ? usage.code : "")
-                                + "|" + (usage.declaringMethod != null ? usage.declaringMethod : "");
-                        if (hitKey.equals(usageKey)) {
-                            sourceStmtToApiUsageIndex.put(hit.stmtObj, usageIndex);
-                            sinkStmts.add(hit.stmtObj);
-                            break;
-                        }
+                    // Any hit with a Stmt object participates in call chain construction,
+                    // regardless of layer (BODY_HIT or CHAIN_EVIDENCE). Previously,
+                    // only BODY_HIT hits were included, causing FIELD_MAP indirect-invoke
+                    // hits to be orphaned from call chain construction.
+                    if (hit.stmtObj != null) {
+                        sinkStmts.add(hit.stmtObj);
                     }
                 }
             }
 
-            if (sinkStmts.isEmpty()) {
-                Logger.log("[-] Current ABC has only CHAIN_EVIDENCE hits, no BODY_HIT, skipping call chain.");
-                continue;
+            // Record the starting index for this file's usages in the global list
+            int dedupStartIndex = nextApiUsageIndex;
+
+            // Add deduplicated usages to the result, maintaining index order
+            for (UnifiedPrivacyReport.ApiUsage usage : dedupedUsages) {
+                result.arktsApiUsages.add(usage);
             }
 
+            // Advance the global index counter
+            nextApiUsageIndex += dedupedUsages.size();
+
+            // Build call chains for this file.
+            // Note: sinkStmts may be empty if all hits have no Stmt objects
+            // (e.g., pure CHAIN_EVIDENCE without stmtObj). In that case,
+            // buildCallChainsForFile will generate fallback chains for all usages.
             buildCallChainsForFile(
                     hiFile,
                     abcFile,
                     sinkStmts,
-                    sourceStmtToApiUsageIndex,
+                    usageToProvenance,
+                    dedupStartIndex,
                     ruleJsonFile,
                     result.callChains,
-                    result.warnings
+                    result.warnings,
+                    cg
             );
         }
 
@@ -330,92 +366,157 @@ public class PreciseSensitiveApiScanner {
     // 4. Build Call Chains and Data Flow for One ABC
     // ======================================================
 
+    /**
+     * Builds call chains and data flow analysis results for all API usages in a single ABC file.
+     *
+     * Uses provenance-based Stmt→apiUsageIndex mapping (one-to-many) instead of the
+     * previous fragile string-key matching. Every API usage is guaranteed to receive
+     * at least a fallback chain, even if no call graph path is found or the usage
+     * has no Stmt object.
+     *
+     * @param hiFile              Parsed HiFile for this ABC
+     * @param abcFile             The ABC file being analyzed
+     * @param sinkStmts           Set of Stmt objects that are sensitive API call sites
+     * @param usageToProvenance   Direct provenance map from each deduplicated ApiUsage to its originating hit
+     * @param dedupStartIndex     The global apiUsageIndex offset for this file's usages
+     * @param ruleJsonFile        Path to privacy_apis.json for data flow analysis
+     * @param outputChains        Output list to append CallChainReport objects to
+     * @param warnings            Output list to append warning messages to
+     */
     private void buildCallChainsForFile(
             HiFile hiFile,
             File abcFile,
             Set<Stmt> sinkStmts,
-            Map<Stmt, Integer> sourceStmtToApiUsageIndex,
+            Map<UnifiedPrivacyReport.ApiUsage, ApiUsageProvenance> usageToProvenance,
+            int dedupStartIndex,
             File ruleJsonFile,
             List<UnifiedPrivacyReport.CallChainReport> outputChains,
-            List<String> warnings
+            List<String> warnings,
+            CallGraph cg
     ) {
-        CallGraph cg = null;
+        // ── Build one-to-many Stmt → apiUsageIndex mapping from provenance ──
+        // A single Stmt can map to multiple apiUsageIndex values when:
+        // 1. The same call site matches both direct and indirect rules
+        // 2. The same Stmt appears in both stmtApiMap and stmtFieldMap
+        Map<Stmt, List<Integer>> stmtToUsageIndices = new LinkedHashMap<>();
+        List<UnifiedPrivacyReport.ApiUsage> provenanceUsages = new ArrayList<>(usageToProvenance.keySet());
 
-        try {
-            Logger.log("[*] Building call graph with ANDERSEN...");
-            cg = Stage.createCallGraph(hiFile, CallGraph.CGBuildMethod.ANDERSEN, true);
-        } catch (Throwable t) {
-            String msg = "Call graph construction failed for " + abcFile.getAbsolutePath() + ": " + t.getMessage();
-            warnings.add(msg);
-            Logger.error("[-] " + msg);
-        }
-
-        if (cg == null) {
-            return;
-        }
-
-        List<CallGraphExplorer.CallChain> chains;
-        try {
-            chains = CallGraphExplorer.extractPrivacyCallChains(hiFile, cg, sinkStmts);
-        } catch (Throwable t) {
-            String msg = "Call chain extraction failed for " + abcFile.getAbsolutePath() + ": " + t.getMessage();
-            warnings.add(msg);
-            Logger.error("[-] " + msg);
-            return;
-        }
-
-        Logger.log("[+] Call chain extraction complete: " + chains.size());
-
-        Map<Stmt, List<CallStmt>> dataFlowResults = new HashMap<>();
-        try {
-            Logger.log("[*] Attempting forward data flow analysis...");
-            dataFlowResults = DataFlowExplorer.findDataSinks(hiFile, cg, sinkStmts,
-                    ruleJsonFile != null ? ruleJsonFile.getAbsolutePath() : null);
-        } catch (Throwable t) {
-            String msg = "Data flow analysis skipped for " + abcFile.getAbsolutePath() + ": " + t.getMessage();
-            warnings.add(msg);
-            Logger.error("[-] " + msg);
-        }
-
-        for (Stmt sourceStmt : sinkStmts) {
-            Integer apiUsageIndex = sourceStmtToApiUsageIndex.get(sourceStmt);
-            if (apiUsageIndex == null) {
-                continue;
+        for (int i = 0; i < provenanceUsages.size(); i++) {
+            ApiUsageProvenance prov = usageToProvenance.get(provenanceUsages.get(i));
+            if (prov != null && prov.sourceStmt != null) {
+                stmtToUsageIndices
+                        .computeIfAbsent(prov.sourceStmt, k -> new ArrayList<>())
+                        .add(dedupStartIndex + i);
             }
+        }
+
+        // ── Call graph is built in scanDirectory() before scanHiFile() ──
+        // and passed here for reuse. This avoids building the CG twice and
+        // ensures the CG state is consistent with what PTA used during scanning.
+
+        // ── Extract call chains with per-stmt attribution ──
+        List<CallGraphExplorer.CallChain> chains = Collections.emptyList();
+        if (cg != null && !sinkStmts.isEmpty()) {
+            try {
+                Map<Stmt, HiFunction> sinkToFunctionMap =
+                        CallGraphExplorer.buildSinkToFunctionMap(sinkStmts);
+                chains = CallGraphExplorer.extractPrivacyCallChainsWithStmtAttribution(
+                        hiFile, cg, sinkStmts, sinkToFunctionMap
+                );
+            } catch (Throwable t) {
+                String msg = "Call chain extraction failed for " + abcFile.getAbsolutePath() + ": " + t.getMessage();
+                warnings.add(msg);
+                Logger.error("[-] " + msg);
+            }
+        }
+
+        Logger.log("[+] Call chain extraction complete: " + chains.size()
+                + " (sinkStmts=" + sinkStmts.size()
+                + ", stmtToUsageIndices entries=" + stmtToUsageIndices.size() + ")");
+
+        // ── Data flow analysis ──
+        Map<Stmt, List<CallStmt>> dataFlowResults = new HashMap<>();
+        if (cg != null) {
+            try {
+                Logger.log("[*] Attempting forward data flow analysis...");
+                dataFlowResults = DataFlowExplorer.findDataSinks(hiFile, cg, sinkStmts,
+                        ruleJsonFile != null ? ruleJsonFile.getAbsolutePath() : null);
+            } catch (Throwable t) {
+                String msg = "Data flow analysis skipped for " + abcFile.getAbsolutePath() + ": " + t.getMessage();
+                warnings.add(msg);
+                Logger.error("[-] " + msg);
+            }
+        }
+
+        // ── Build per-stmt chain lookup ──
+        Map<Stmt, List<CallGraphExplorer.CallChain>> stmtToChains = new LinkedHashMap<>();
+        for (CallGraphExplorer.CallChain chain : chains) {
+            if (chain.sinkStmt != null) {
+                stmtToChains.computeIfAbsent(chain.sinkStmt, k -> new ArrayList<>()).add(chain);
+            }
+        }
+
+        // ── Track which apiUsageIndex values have received at least one chain ──
+        Set<Integer> coveredIndices = new HashSet<>();
+
+        // ── Generate CallChainReports for each Stmt that has apiUsageIndex mapping ──
+        for (Map.Entry<Stmt, List<Integer>> entry : stmtToUsageIndices.entrySet()) {
+            Stmt sourceStmt = entry.getKey();
+            List<Integer> indices = entry.getValue();
+            List<CallGraphExplorer.CallChain> chainsForStmt =
+                    stmtToChains.getOrDefault(sourceStmt, Collections.emptyList());
 
             HiFunction sourceFunc = safeGetHiFunction(sourceStmt);
-            if (sourceFunc == null) {
-                continue;
+
+            for (int apiUsageIndex : indices) {
+                if (chainsForStmt.isEmpty()) {
+                    // No call chains found from entry — generate fallback
+                    UnifiedPrivacyReport.CallChainReport fallback = buildFallbackChainReport(
+                            apiUsageIndex,
+                            abcFile,
+                            sourceStmt,
+                            sourceFunc,
+                            dataFlowResults.getOrDefault(sourceStmt, new ArrayList<>()),
+                            hiFile
+                    );
+                    outputChains.add(fallback);
+                } else {
+                    // Generate one CallChainReport per discovered call path
+                    for (CallGraphExplorer.CallChain chain : chainsForStmt) {
+                        UnifiedPrivacyReport.CallChainReport reportChain = convertCallChain(
+                                apiUsageIndex,
+                                abcFile,
+                                sourceStmt,
+                                chain,
+                                dataFlowResults.getOrDefault(sourceStmt, new ArrayList<>()),
+                                hiFile
+                        );
+                        outputChains.add(reportChain);
+                    }
+                }
+                coveredIndices.add(apiUsageIndex);
+            }
+        }
+
+        // ── Generate fallback chains for usages with NO Stmt object ──
+        // These are API usages whose originating hit had stmtObj == null
+        // (typically CHAIN_EVIDENCE hits without a recoverable Stmt reference,
+        // or property-access patterns that don't map to a call-site Stmt).
+        for (int i = 0; i < provenanceUsages.size(); i++) {
+            int apiUsageIndex = dedupStartIndex + i;
+            if (coveredIndices.contains(apiUsageIndex)) {
+                continue; // Already has chain(s)
             }
 
-            List<CallGraphExplorer.CallChain> relatedChains = chains.stream()
-                    .filter(c -> c != null && c.sinkNode != null && c.sinkNode.equals(sourceFunc))
-                    .collect(Collectors.toList());
+            UnifiedPrivacyReport.ApiUsage usage = provenanceUsages.get(i);
+            ApiUsageProvenance prov = usageToProvenance.get(usage);
 
-            if (relatedChains.isEmpty()) {
-                UnifiedPrivacyReport.CallChainReport fallback = buildFallbackChainReport(
-                        apiUsageIndex,
-                        abcFile,
-                        sourceStmt,
-                        sourceFunc,
-                        dataFlowResults.getOrDefault(sourceStmt, new ArrayList<>()),
-                        hiFile
-                );
-                outputChains.add(fallback);
-                continue;
-            }
-
-            for (CallGraphExplorer.CallChain chain : relatedChains) {
-                UnifiedPrivacyReport.CallChainReport reportChain = convertCallChain(
-                        apiUsageIndex,
-                        abcFile,
-                        sourceStmt,
-                        chain,
-                        dataFlowResults.getOrDefault(sourceStmt, new ArrayList<>()),
-                        hiFile
-                );
-                outputChains.add(reportChain);
-            }
+            UnifiedPrivacyReport.CallChainReport fallback =
+                    buildFallbackChainForUsage(apiUsageIndex, usage, prov, abcFile, hiFile);
+            outputChains.add(fallback);
+            Logger.log("[+] Generated fallback chain for usage #" + apiUsageIndex
+                    + " (no Stmt: " + (usage.namespace != null ? usage.namespace : "")
+                    + "." + (usage.method != null ? usage.method : "") + ")");
         }
     }
 
@@ -449,6 +550,138 @@ public class PreciseSensitiveApiScanner {
         );
 
         return report;
+    }
+
+    /**
+     * Builds a minimal fallback chain for an API usage that has no Stmt object.
+     * This occurs when the originating hit had stmtObj == null (e.g., CHAIN_EVIDENCE
+     * hits without a recoverable Stmt reference, or property-access patterns that
+     * don't map to a call-site Stmt).
+     *
+     * The fallback chain uses the usage's declaringMethod as the entry point and
+     * provides a semantic context describing the API reference. While it lacks
+     * the full call path and source snippets, it ensures every API usage has at
+     * least one CallChainReport, guaranteeing complete apiUsageIndex coverage.
+     */
+    private UnifiedPrivacyReport.CallChainReport buildFallbackChainForUsage(
+            int apiUsageIndex,
+            UnifiedPrivacyReport.ApiUsage usage,
+            ApiUsageProvenance prov,
+            File abcFile,
+            HiFile hiFile
+    ) {
+        UnifiedPrivacyReport.CallChainReport report = new UnifiedPrivacyReport.CallChainReport();
+        report.apiUsageIndex = apiUsageIndex;
+
+        report.entryMethod = new UnifiedPrivacyReport.EntryMethod();
+        report.entryMethod.name = usage.declaringMethod != null ? usage.declaringMethod : "<unknown>";
+        report.entryMethod.type = inferEntryMethodTypeByName(usage.declaringMethod);
+        report.entryMethod.file = abcFile.getName();
+        report.entryMethod.line = -1;
+
+        // Attempt to find the HiFunction for source snippet extraction
+        if (usage.declaringMethod != null && hiFile != null) {
+            HiFunction func = findFunctionByName(hiFile, usage.declaringMethod);
+            if (func != null) {
+                report.sourceSnippets.add(buildSourceSnippet(func, abcFile.getName()));
+            }
+        }
+
+        report.semanticContext = new UnifiedPrivacyReport.SemanticContext();
+        report.semanticContext.pageName = inferPageName(abcFile.getName());
+        report.semanticContext.componentClass = inferComponentClass(usage.declaringMethod);
+        report.semanticContext.semanticAnchor = usage.declaringMethod;
+
+        String apiLabel = (usage.namespace != null ? usage.namespace : "")
+                + "." + (usage.method != null ? usage.method : "sensitive API");
+        report.semanticContext.simplifiedChain =
+                simplifyFunctionName(usage.declaringMethod) + "() -> " + apiLabel;
+        report.semanticContext.purposeHint = "In " + abcFile.getName()
+                + ", function " + simplifyFunctionName(usage.declaringMethod)
+                + "() references " + apiLabel;
+
+        return report;
+    }
+
+    /**
+     * Infers entry method type from function name string alone (without HiFunction object).
+     * Used by buildFallbackChainForUsage when no Stmt/HiFunction is available.
+     */
+    private String inferEntryMethodTypeByName(String functionName) {
+        if (functionName == null) {
+            return "method";
+        }
+        String lowerName = functionName.toLowerCase(Locale.ROOT);
+
+        if (lowerName.contains(".build") || lowerName.contains("abouttoappear") ||
+            lowerName.contains("abouttodisappear") || lowerName.contains("onpageshow") ||
+            lowerName.contains("onpagehide") || lowerName.contains("onbackpress") ||
+            lowerName.contains("onready") || lowerName.contains("ondisposed") ||
+            lowerName.contains("oninit") || lowerName.contains("onstart") ||
+            lowerName.contains("onstop") || lowerName.contains("onactive") ||
+            lowerName.contains("oninactive") || lowerName.contains("onforeground") ||
+            lowerName.contains("onbackground")) {
+            return "component_lifecycle";
+        }
+
+        if (lowerName.contains("onabilitycreate") || lowerName.contains("onabilitydestroy") ||
+            lowerName.contains("onabilityforeground") || lowerName.contains("onabilitybackground") ||
+            lowerName.contains("onwindowstagecreate") || lowerName.contains("onwindowstagedestroy") ||
+            lowerName.contains("oncontinue") || lowerName.contains("onnewwant") ||
+            lowerName.contains("ondump") || lowerName.contains("onrequest")) {
+            return "ability_lifecycle";
+        }
+
+        if (functionName.endsWith("Component") || functionName.endsWith("Page") ||
+            functionName.endsWith("View") || functionName.endsWith("Builder") ||
+            functionName.endsWith("Element") || functionName.endsWith("Item")) {
+            return "ui_component";
+        }
+
+        if (lowerName.contains("onclick") || lowerName.contains("onchange") ||
+            lowerName.contains("oninput") || lowerName.contains("onsubmit") ||
+            lowerName.contains("ontouchstart") || lowerName.contains("ontouchmove") ||
+            lowerName.contains("ontouchend") || lowerName.contains("onscroll") ||
+            lowerName.contains("onswipe") || lowerName.contains("onlongpress") ||
+            lowerName.contains("%am") || lowerName.contains("%o_click") ||
+            lowerName.contains("handler_click") || lowerName.contains("handler_change")) {
+            return "event_handler";
+        }
+
+        if (lowerName.contains("callback") || lowerName.contains("then(") ||
+            lowerName.contains("catch(") || lowerName.contains("%resolve") ||
+            lowerName.contains("%reject") || lowerName.contains("_callback_") ||
+            lowerName.contains("_success") || lowerName.contains("_fail") ||
+            lowerName.contains("_complete")) {
+            return "async_callback";
+        }
+
+        if (functionName.equals("func_main_0") || functionName.startsWith("func_")) {
+            return "entry_point";
+        }
+
+        return "method";
+    }
+
+    /**
+     * Finds a HiFunction by name in the HiFile.
+     * Used by buildFallbackChainForUsage to extract source snippets when
+     * we have a function name but no Stmt reference.
+     */
+    private HiFunction findFunctionByName(HiFile hiFile, String functionName) {
+        if (hiFile == null || functionName == null) {
+            return null;
+        }
+        try {
+            for (HiFunction func : hiFile.getHiFunctions()) {
+                if (func != null && functionName.equals(func.getName())) {
+                    return func;
+                }
+            }
+        } catch (Throwable t) {
+            // Fall through
+        }
+        return null;
     }
 
     private UnifiedPrivacyReport.CallChainReport convertCallChain(
@@ -563,12 +796,32 @@ public class PreciseSensitiveApiScanner {
             String fileName,
             List<PrivacyApiRuleWithPkg> directRules,
             List<PrivacyApiRuleWithPkg> indirectRules,
-            List<PrivacyApiRuleWithPkg> constantRules
+            List<PrivacyApiRuleWithPkg> constantRules,
+            CallGraph cg
     ) {
         List<SensitiveApiHit> results = new ArrayList<>();
 
+        // Extract Andersen PTA from call graph for namespace inference
+        Andersen andersen = null;
+        if (cg != null && cg.getPta() instanceof Andersen) {
+            andersen = (Andersen) cg.getPta();
+        }
+
         Map<Stmt, String> stmtApiMap = safeGetAllStmtApiNameMap(hiFile);
         Map<Stmt, String> stmtFieldMap = safeGetAllStmtFieldNameMap(hiFile);
+
+        // Track Stmts that already produced an API_MAP hit to prevent cross-map
+        // duplication. When the same Stmt appears in both stmtApiMap and stmtFieldMap,
+        // the API_MAP hit is always more informative (full call signature with arguments),
+        // so the FIELD_MAP hit is redundant and should be suppressed.
+        Set<Stmt> stmtsWithApiMapHit = new HashSet<>();
+
+        // Also track (function, namespace, method) triples from API_MAP hits.
+        // Since API_MAP and FIELD_MAP use different Stmt objects for the same
+        // call site, Stmt-identity dedup alone is insufficient. When a FIELD_MAP
+        // entry with the SSA phi pattern (vN = vN.<method>) matches the same
+        // (function, namespace, method) as an API_MAP entry, it's redundant.
+        Set<String> apiMapFunctionMethodKeys = new HashSet<>();
 
         for (Map.Entry<Stmt, String> entry : stmtApiMap.entrySet()) {
             Stmt stmt = entry.getKey();
@@ -576,11 +829,6 @@ public class PreciseSensitiveApiScanner {
             String stmtText = safe(stmt);
 
             if (stmt == null || fullApiName == null || fullApiName.isEmpty()) {
-                continue;
-            }
-
-            // Skip SSA phi/copy nodes: "vN = vN.<method>" where LHS == RHS variable
-            if (isSsaPhiNode(stmtText)) {
                 continue;
             }
 
@@ -597,14 +845,18 @@ public class PreciseSensitiveApiScanner {
             );
             if (directHit != null) {
                 results.add(directHit);
+                stmtsWithApiMapHit.add(stmt);
+                apiMapFunctionMethodKeys.add(functionName + "|" + directHit.namespace + "|" + directHit.method);
                 continue;
             }
 
             SensitiveApiHit indirectHit = matchIndirectCall(
-                    stmt, info, fileName, functionName, indirectRules, "BODY_HIT", "API_MAP"
+                    stmt, info, fileName, functionName, indirectRules, "BODY_HIT", "API_MAP", andersen
             );
             if (indirectHit != null) {
                 results.add(indirectHit);
+                stmtsWithApiMapHit.add(stmt);
+                apiMapFunctionMethodKeys.add(functionName + "|" + indirectHit.namespace + "|" + indirectHit.method);
             }
         }
 
@@ -616,6 +868,32 @@ public class PreciseSensitiveApiScanner {
                 continue;
             }
 
+            // Cross-map deduplication: if this Stmt already produced an API_MAP hit,
+            // skip it in the FIELD_MAP loop. The API_MAP hit contains the full call
+            // signature (e.g., "v10 = VirtualCall: v2.<uploadFile>(v4, v5)"), while
+            // the FIELD_MAP hit only has the property reference (e.g., "v10 = v10.<uploadFile>").
+            // Keeping both would double-count the same call site.
+            if (stmtsWithApiMapHit.contains(stmt)) {
+                continue;
+            }
+
+            String stmtText = safe(stmt);
+
+            // SSA phi/copy pattern: "vN = vN.<method>" where LHS == RHS variable.
+            // In the FIELD_MAP, this pattern arises for two reasons:
+            //   1. Redundant: The API_MAP already captured the full call (e.g.,
+            //      "v9 = VirtualCall: v1.<request>(v4, v2, v5)"), and the FIELD_MAP
+            //      has the property reference form ("v9 = v9.<request>"). Skipping
+            //      these avoids double-counting the same call site.
+            //   2. Legitimate: Property accesses like "v10 = v10.<brand>" for
+            //      constant APIs (deviceInfo.brand) have no corresponding API_MAP entry,
+            //      so the FIELD_MAP is the only source. These must NOT be filtered.
+            //
+            // Strategy: When isSsaPhiNode matches, still try matchPrivacyConstant
+            // (which handles constant/property APIs), but skip matchDirectCall and
+            // matchIndirectCall (which would produce redundant call-site entries).
+            boolean isSsaPattern = isSsaPhiNode(stmtText);
+
             ResolvedNameInfo info = parseResolvedName(fullFieldName);
             if (!isAcceptedResolvedName(info)) {
                 continue;
@@ -624,11 +902,30 @@ public class PreciseSensitiveApiScanner {
             HiFunction func = safeGetHiFunction(stmt);
             String functionName = safeFunctionName(func);
 
+            // Always try constant/property matching (directCall=null rules)
             SensitiveApiHit fieldHit = matchPrivacyConstant(
                     stmt, info, fileName, functionName, constantRules, "BODY_HIT", "FIELD_MAP"
             );
             if (fieldHit != null) {
                 results.add(fieldHit);
+                continue;
+            }
+
+            // For SSA phi patterns (vN = vN.<method>), skip matchDirectCall because
+            // the API_MAP already has the full call signature. For matchIndirectCall
+            // (directCall=false rules like deviceInfo.ODID), only add the hit if
+            // the API_MAP doesn't already have an entry for the same
+            // (function, namespace, method) — otherwise it's a redundant duplicate.
+            if (isSsaPattern) {
+                SensitiveApiHit indirectChain = matchIndirectCall(
+                        stmt, info, fileName, functionName, indirectRules, "CHAIN_EVIDENCE", "FIELD_MAP", andersen
+                );
+                if (indirectChain != null) {
+                    String fmKey = functionName + "|" + indirectChain.namespace + "|" + indirectChain.method;
+                    if (!apiMapFunctionMethodKeys.contains(fmKey)) {
+                        results.add(indirectChain);
+                    }
+                }
                 continue;
             }
 
@@ -641,7 +938,7 @@ public class PreciseSensitiveApiScanner {
             }
 
             SensitiveApiHit indirectChain = matchIndirectCall(
-                    stmt, info, fileName, functionName, indirectRules, "CHAIN_EVIDENCE", "FIELD_MAP"
+                    stmt, info, fileName, functionName, indirectRules, "CHAIN_EVIDENCE", "FIELD_MAP", andersen
             );
             if (indirectChain != null) {
                 results.add(indirectChain);
@@ -667,18 +964,46 @@ public class PreciseSensitiveApiScanner {
         String stmtText = safe(stmt);
         boolean assignmentLike = stmtText != null && stmtText.contains("=");
 
+        // Two-pass matching: first try rules with parenthesized arguments (most specific),
+        // then fall back to rules without arguments (more general). This ensures that
+        // sensor.on('SensorId.ACCELEROMETER') (with specific permission) takes priority
+        // over sensor.on (generic) when the argument can be resolved.
+        SensitiveApiHit fallbackHit = null;
+
         for (PrivacyApiRuleWithPkg item : directRules) {
-            if (!Objects.equals(item.rule.method, info.lastToken)
-                    || !namespaceMustBePredecessor(info.pathTokens, item.rule.namespace)) {
+            // Strip parenthesized arguments from the rule method name.
+            // Rules like sensor.on('SensorId.ACCELEROMETER') have method="on('SensorId.ACCELEROMETER')",
+            // but in the binary IR the API name is just "sensor.on" — the argument is not part of
+            // the resolved name. Stripping the parenthesized portion allows matching the base method.
+            String baseMethod = stripMethodArguments(item.rule.method);
+
+            if (!methodMatchesPath(info, baseMethod)
+                    || !namespaceMatchesForMethod(info.pathTokens, baseMethod, item.rule.namespace)) {
                 continue;
             }
 
-            SensitiveApiHit hit = createBaseHit(stmt, info, fileName, functionName, item, layer, sourceKind);
-            hit.category = assignmentLike ? "direct invoke stmt after assignment" : "direct invoke stmt";
-            return hit;
+            // If the rule has parenthesized arguments, verify them via CallStmt argument inspection.
+            // This distinguishes sensor.on(ACCELEROMETER) from sensor.on(GYROSCOPE), enabling
+            // correct permission attribution per sensor type.
+            String expectedArg = extractMethodArgument(item.rule.method);
+            if (expectedArg != null) {
+                if (!callStmtArgsMatchArgumentPattern(stmt, stmtText, expectedArg)) {
+                    continue; // Argument doesn't match — skip this specific rule
+                }
+                // Argument matches — this is the most specific match, return immediately
+                SensitiveApiHit hit = createBaseHit(stmt, info, fileName, functionName, item, layer, sourceKind);
+                hit.category = assignmentLike ? "direct invoke stmt after assignment" : "direct invoke stmt";
+                return hit;
+            }
+
+            // No parenthesized argument — this is a generic rule. Save as fallback.
+            if (fallbackHit == null) {
+                fallbackHit = createBaseHit(stmt, info, fileName, functionName, item, layer, sourceKind);
+                fallbackHit.category = assignmentLike ? "direct invoke stmt after assignment" : "direct invoke stmt";
+            }
         }
 
-        return null;
+        return fallbackHit;
     }
 
     private SensitiveApiHit matchIndirectCall(
@@ -688,28 +1013,464 @@ public class PreciseSensitiveApiScanner {
             String functionName,
             List<PrivacyApiRuleWithPkg> indirectRules,
             String layer,
-            String sourceKind
+            String sourceKind,
+            Andersen andersen
     ) {
         if (!info.valid || info.pathTokens == null || info.pathTokens.isEmpty()) {
             return null;
         }
 
         String joinedPath = String.join(".", info.pathTokens);
+        String stmtText = safe(stmt);
+
+        // Two-pass matching: prefer rules with matching parenthesized arguments
+        SensitiveApiHit fallbackHit = null;
+
+        // Namespace inference for indirect calls: try multiple strategies to determine
+        // the namespace of the base variable in an InstanceCallExpr.
+        // Priority: Andersen PTA > static type from Local.getType() > resolved name parsing
+        Set<String> namespaceCandidates = inferNamespaceCandidatesFromCallBase(stmt, andersen);
+
+        // Track whether candidates came from PTA/static type (InstanceCallExpr) or
+        // rootQualifier extraction (static calls). This determines which blocking
+        // strategy to use in the heuristic fallback below.
+        boolean hasPtaCandidates = !namespaceCandidates.isEmpty();
+
+        // Fallback: extract namespace candidates from the resolved name's rootQualifier
+        // or from the joinedPath when it contains user-defined class markers (&...&).
+        // This handles static calls (non-InstanceCallExpr) where the call base cannot be
+        // analyzed via PTA or static type.
+        //
+        // Two sources of rootQualifier:
+        // 1. info.rootQualifier: set when the resolved name has a colon separator
+        //    (e.g., "&entry.src.main.ets.viewmodel.UserViewModel&.#Foreign: unknown register")
+        // 2. joinedPath: when the resolved name embeds the class path directly
+        //    (e.g., "&entry.src.main.ets.viewmodel.UserViewModel&.#Foreign.register")
+        //    In this case, extract from the &...& pattern in joinedPath.
+        //
+        // Only extract when:
+        // - No candidates from PTA/static type (namespaceCandidates is empty)
+        // - The extracted path does NOT contain SDK-like paths ("@ohos", "@kit")
+        if (namespaceCandidates.isEmpty()) {
+            String rqSource = null;
+            if (info.rootQualifier != null && !info.rootQualifier.isEmpty()) {
+                rqSource = info.rootQualifier;
+            } else if (joinedPath != null && joinedPath.contains("&")) {
+                // Extract the &...& pattern from joinedPath
+                int start = joinedPath.indexOf('&');
+                int end = joinedPath.indexOf('&', start + 1);
+                if (end > start) {
+                    rqSource = joinedPath.substring(start + 1, end);
+                }
+            }
+            if (rqSource != null && !rqSource.isEmpty()) {
+                String rqLower = rqSource.toLowerCase(Locale.ROOT);
+                boolean isSdkLibrary = rqLower.contains("@ohos") || rqLower.contains("@kit")
+                        || rqLower.contains("ohos.") || rqLower.contains("kit.");
+                if (!isSdkLibrary) {
+                    namespaceCandidates.addAll(extractNamespaceCandidatesFromRootQualifier(rqSource));
+                }
+            }
+        }
+
+        String inferredNamespace = pickBestNamespace(namespaceCandidates);
+        String effectivePath = joinedPath;
+        if (inferredNamespace != null && !inferredNamespace.isEmpty()) {
+            // If the inferred namespace is not already in pathTokens, prepend it
+            // so that namespaceMatchesForMethod can use it.
+            boolean nsAlreadyInPath = info.pathTokens.contains(inferredNamespace);
+            if (!nsAlreadyInPath) {
+                effectivePath = inferredNamespace + "." + joinedPath;
+            }
+        }
+
+        List<String> effectivePathTokens = new ArrayList<>();
+        if (inferredNamespace != null && !info.pathTokens.contains(inferredNamespace)) {
+            effectivePathTokens.add(inferredNamespace);
+        }
+        effectivePathTokens.addAll(info.pathTokens);
 
         for (PrivacyApiRuleWithPkg item : indirectRules) {
-            if (item.rule.method == null
-                    || item.rule.method.isEmpty()
-                    || !endsWithDotted(joinedPath, item.rule.method)
-                    || !namespaceMustBePredecessor(info.pathTokens, item.rule.namespace)) {
+            String baseMethod = stripMethodArguments(item.rule.method);
+
+            // Use effectivePathTokens (with inferred namespace) for matching
+            boolean pathMatch = (baseMethod != null && !baseMethod.isEmpty()
+                    && endsWithDotted(effectivePath, baseMethod)
+                    && namespaceMatchesForMethod(effectivePathTokens, baseMethod, item.rule.namespace));
+
+            // Heuristic fallback: if path-based namespace matching fails but the method name
+            // uniquely matches an indirect call rule, accept it anyway. This handles cases
+            // where the resolved API name lacks proper namespace information.
+            //
+            // CRITICAL: When ALL inferred namespace candidates CONTRADICT the rule's namespace
+            // (e.g., inferred="UserViewModel" vs rule="NetConnection"), the heuristic must be
+            // suppressed to prevent false positives like UserViewModel.register being matched
+            // as NetConnection.register.
+            //
+            // Blocking strategies (mutually exclusive):
+            // - InstanceCallExpr (hasPtaCandidates): use ONLY ptaClassHasMethod.
+            //   PTA already gives precise type info; adding isNamespaceContradicted on top
+            //   would double-block and drop legitimate chains.
+            // - Static calls (!hasPtaCandidates, rootQualifier-derived): use ONLY
+            //   isNamespaceContradicted. These have no PTA, so rootQualifier extraction
+            //   is the only source of namespace info for FP blocking.
+            if (!pathMatch && baseMethod != null && !baseMethod.isEmpty()) {
+                boolean methodOnlyMatch = Objects.equals(baseMethod, info.lastToken)
+                        || endsWithDotted(joinedPath, baseMethod);
+                if (methodOnlyMatch && isMethodUniqueToNamespace(baseMethod, indirectRules)) {
+                    boolean shouldBlock = false;
+                    if (hasPtaCandidates) {
+                        // InstanceCallExpr: PTA/static type provides candidates.
+                        // Only use ptaClassHasMethod — it's precise and sufficient.
+                        if (andersen != null) {
+                            shouldBlock = ptaClassHasMethod(stmt, andersen, baseMethod);
+                        }
+                    } else if (!namespaceCandidates.isEmpty()) {
+                        // Static call: rootQualifier provides candidates.
+                        // Use namespace contradiction as the blocking mechanism.
+                        shouldBlock = isNamespaceContradicted(namespaceCandidates, item.rule.namespace);
+                    }
+                    // else: no candidates at all, allow heuristic (preserve recall)
+                    if (!shouldBlock) {
+                        pathMatch = true;
+                    }
+                }
+            }
+
+            if (!pathMatch) {
                 continue;
             }
 
-            SensitiveApiHit hit = createBaseHit(stmt, info, fileName, functionName, item, layer, sourceKind);
-            hit.category = "indirect invoke";
-            return hit;
+            String expectedArg = extractMethodArgument(item.rule.method);
+            if (expectedArg != null) {
+                if (!callStmtArgsMatchArgumentPattern(stmt, stmtText, expectedArg)) {
+                    continue;
+                }
+                SensitiveApiHit hit = createBaseHit(stmt, info, fileName, functionName, item, layer, sourceKind);
+                hit.category = "indirect invoke";
+                return hit;
+            }
+
+            if (fallbackHit == null) {
+                fallbackHit = createBaseHit(stmt, info, fileName, functionName, item, layer, sourceKind);
+                fallbackHit.category = "indirect invoke";
+            }
         }
 
-        return null;
+        return fallbackHit;
+    }
+
+    /**
+     * Infers the namespace from the base variable of an InstanceCallExpr using
+     * multiple strategies with increasing precision:
+     *
+     * 1. Andersen PTA points-to analysis: getPointsToHiClasses(base) returns the
+     *    set of HiClass objects that the base variable may point to. For each class,
+     *    we extract the namespace from getName() or getPackageName(). This is the
+     *    most precise method because it uses interprocedural type analysis.
+     *
+     * 2. Static type from Local.getType(): Fallback to the declared type of the
+     *    base variable (first segment of the type string). Less precise but always
+     *    available when the variable has a type annotation.
+     *
+     * @param stmt     The statement potentially containing a call expression
+     * @param andersen  The Andersen PTA instance (may be null if call graph failed)
+     * @return The set of namespace candidates inferred from the call base, or empty set if inference fails
+     */
+    private Set<String> inferNamespaceCandidatesFromCallBase(Stmt stmt, Andersen andersen) {
+        Set<String> candidates = new LinkedHashSet<>();
+        if (!(stmt instanceof CallStmt)) {
+            return candidates;
+        }
+        try {
+            CallStmt callStmt = (CallStmt) stmt;
+            var callExpr = callStmt.getCallExpr();
+            if (callExpr instanceof com.huawei.hianalyzer.ir.value.expr.InstanceCallExpr) {
+                com.huawei.hianalyzer.ir.value.expr.InstanceCallExpr instanceCall =
+                        (com.huawei.hianalyzer.ir.value.expr.InstanceCallExpr) callExpr;
+                var base = instanceCall.getBase();
+                if (base != null) {
+                    // Strategy 1: Andersen PTA points-to analysis
+                    if (andersen != null) {
+                        try {
+                            Set<com.huawei.hianalyzer.analysis.base.HiClass> ptClasses =
+                                    andersen.getPointsToHiClasses(base);
+                            if (ptClasses != null && !ptClasses.isEmpty()) {
+                                for (var cls : ptClasses) {
+                                    candidates.addAll(extractNamespaceCandidatesFromClass(cls));
+                                }
+                            }
+                        } catch (Throwable ignored) {
+                            // PTA query failed, fall through to static type
+                        }
+                    }
+
+                    // Strategy 2: Static type from Local.getType()
+                    var type = base.getType();
+                    if (type != null) {
+                        String typeStr = type.toString();
+                        if (typeStr != null && !typeStr.isEmpty()) {
+                            int dot = typeStr.indexOf('.');
+                            String ns = dot > 0 ? typeStr.substring(0, dot) : typeStr;
+                            if (!ns.isEmpty() && !ns.equals("unknown") && !ns.equals("Object")) {
+                                candidates.add(ns);
+                            }
+                        }
+                    }
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+        return candidates;
+    }
+
+    /**
+     * Extracts namespace candidates from a HiClass object.
+     * Returns both the class name and the last segment of the package name,
+     * since rules use either as the namespace (e.g., "HttpRequest" or "deviceinfo").
+     */
+    private Set<String> extractNamespaceCandidatesFromClass(com.huawei.hianalyzer.analysis.base.HiClass cls) {
+        Set<String> candidates = new LinkedHashSet<>();
+        if (cls == null) return candidates;
+        try {
+            // Class name (e.g., "HttpRequest", "SystemPasteboard")
+            String name = cls.getName();
+            if (name != null && !name.isEmpty()) {
+                // For nested class names like "pasteboard.SystemPasteboard",
+                // extract the last segment
+                int dot = name.lastIndexOf('.');
+                String lastName = dot >= 0 ? name.substring(dot + 1) : name;
+                if (!lastName.isEmpty() && !lastName.equals("Object") && !lastName.equals("unknown")) {
+                    candidates.add(lastName);
+                }
+                // Also add the full name in case the rule uses it
+                if (!name.equals(lastName)) {
+                    candidates.add(name);
+                }
+            }
+            // Package name last segment (e.g., "http" from "@ohos.net.http")
+            String pkg = cls.getPackageName();
+            if (pkg != null && !pkg.isEmpty()) {
+                int lastDot = pkg.lastIndexOf('.');
+                String lastSeg = lastDot >= 0 ? pkg.substring(lastDot + 1) : pkg;
+                if (!lastSeg.isEmpty() && !lastSeg.equals("Object") && !lastSeg.equals("unknown")) {
+                    candidates.add(lastSeg);
+                }
+            }
+            // For ForeignClass (SDK types), also extract namespace from import path
+            // e.g., getFromPath() returns "@ohos.net.http" → add "ohos.net.http" and "http"
+            // Note: ForeignClass is NOT a subclass of HiClass, so we check isForeign()
+            // on the BaseClass and use the IBaseForeign interface to access SDK info.
+            if (cls.isForeign()) {
+                try {
+                    var ibf = (com.huawei.hianalyzer.common.base.IBaseForeign) cls;
+                    String fromPath = ibf.getFromPath();
+                    if (fromPath != null && !fromPath.isEmpty()) {
+                        String path = fromPath.startsWith("@") ? fromPath.substring(1) : fromPath;
+                        if (!path.isEmpty()) {
+                            candidates.add(path);
+                            int lastDot = path.lastIndexOf('.');
+                            if (lastDot > 0) {
+                                candidates.add(path.substring(lastDot + 1));
+                            }
+                        }
+                    }
+                    String importName = ibf.getImportName();
+                    if (importName != null && !importName.isEmpty()) {
+                        candidates.add(importName);
+                    }
+                } catch (Throwable ignored) {}
+            }
+        } catch (Throwable ignored) {
+        }
+        return candidates;
+    }
+
+    /**
+     * Extracts namespace candidates from the rootQualifier of a resolved API name.
+     * The rootQualifier is the part before the colon in names like:
+     *   "&entry.src.main.ets.viewmodel.UserViewModel&.#Foreign: unknown register"
+     *   "com.example.app@ohos: net.http.request"
+     *
+     * For user-defined classes (containing "entry", "src", "main", "ets", etc.),
+     * we extract the class name (last segment before '&') and package segments.
+     * These candidates help isNamespaceContradicted detect when a call is to a
+     * user-defined class method rather than an SDK API.
+     */
+    private Set<String> extractNamespaceCandidatesFromRootQualifier(String rootQualifier) {
+        Set<String> candidates = new LinkedHashSet<>();
+        if (rootQualifier == null || rootQualifier.isEmpty()) {
+            return candidates;
+        }
+        try {
+            String rq = rootQualifier.trim();
+            // Strip leading '&' and trailing '&' if present
+            if (rq.startsWith("&")) rq = rq.substring(1);
+            if (rq.endsWith("&")) rq = rq.substring(0, rq.length() - 1);
+
+            // Split by '.' and extract meaningful segments
+            String[] segments = rq.split("\\.");
+            if (segments.length == 0) return candidates;
+
+            // Add the last segment (likely the class name, e.g., "UserViewModel")
+            String lastSeg = segments[segments.length - 1].trim();
+            if (!lastSeg.isEmpty() && !lastSeg.equals("unknown") && !lastSeg.equals("Object")) {
+                candidates.add(lastSeg);
+            }
+
+            // Add the second-to-last segment (likely the package/class context)
+            if (segments.length >= 2) {
+                String prevSeg = segments[segments.length - 2].trim();
+                if (!prevSeg.isEmpty() && !prevSeg.equals("unknown") && !prevSeg.equals("Object")
+                        && !prevSeg.equals("src") && !prevSeg.equals("main") && !prevSeg.equals("ets")
+                        && !prevSeg.equals("entry")) {
+                    candidates.add(prevSeg);
+                }
+            }
+
+            // Also add the full rootQualifier as a candidate (for prefix matching)
+            if (!rq.isEmpty()) {
+                candidates.add(rq);
+            }
+        } catch (Throwable ignored) {
+        }
+        return candidates;
+    }
+
+    /**
+     * Checks if any PTA-resolved class for the call's base variable has a method
+     * with the given name. If the PTA class itself defines this method, the call
+     * is to the class's own implementation, not to an SDK API via dynamic dispatch.
+     * This is used to prevent false positives like UserViewModel.register being
+     * matched as NetConnection.register.
+     */
+    private boolean ptaClassHasMethod(Stmt stmt, Andersen andersen, String methodName) {
+        if (!(stmt instanceof CallStmt) || andersen == null || methodName == null) {
+            return false;
+        }
+        try {
+            CallStmt callStmt = (CallStmt) stmt;
+            var callExpr = callStmt.getCallExpr();
+            if (callExpr instanceof com.huawei.hianalyzer.ir.value.expr.InstanceCallExpr) {
+                var base = ((com.huawei.hianalyzer.ir.value.expr.InstanceCallExpr) callExpr).getBase();
+                if (base != null) {
+                    Set<com.huawei.hianalyzer.analysis.base.HiClass> ptClasses =
+                            andersen.getPointsToHiClasses(base);
+                    if (ptClasses != null) {
+                        for (var cls : ptClasses) {
+                            var funcs = cls.getFunctionByName(methodName);
+                            if (funcs != null && !funcs.isEmpty()) {
+                                return true;
+                            }
+                            // Also check if the class name matches the method name
+                            // (e.g., class "register" in lambda/anonymous class)
+                            String clsName = cls.getName();
+                            if (clsName != null && clsName.equalsIgnoreCase(methodName)) {
+                                return true;
+                            }
+                        }
+                    }
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+        return false;
+    }
+
+    /**
+     * When multiple namespace candidates are found via PTA, pick the best one.
+     * Prefers namespaces that match known API module patterns (e.g., containing
+     * "ohos", "kit", or common SDK identifiers).
+     */
+    private String pickBestNamespace(Set<String> namespaces) {
+        if (namespaces == null || namespaces.isEmpty()) {
+            return null;
+        }
+        // Prefer namespaces that look like SDK modules
+        for (String ns : namespaces) {
+            String lower = ns.toLowerCase(Locale.ROOT);
+            if (lower.contains("ohos") || lower.contains("kit") || lower.contains("system")) {
+                return ns;
+            }
+        }
+        // Otherwise return the first one (arbitrary but deterministic due to LinkedHashSet)
+        return namespaces.iterator().next();
+    }
+
+    /**
+     * Checks if a method name uniquely identifies a single namespace among the given rules.
+     * This is used as a heuristic fallback: if only one rule has this method name,
+     * we can safely match by method name alone even without namespace confirmation.
+     *
+     * @param method        The method name to check
+     * @param indirectRules The list of indirect rules to check against
+     * @return true if the method name appears in exactly one rule
+     */
+    /**
+     * Checks whether ALL inferred namespace candidates contradict the rule's namespace.
+     * A candidate contradicts if it is non-empty, not equal to the rule namespace,
+     * not a prefix/suffix of it, and not an alias of it.
+     * If ANY candidate is compatible (including via PACKAGE_ALIASES), we return false
+     * (no contradiction). If no candidates exist, we also return false (no evidence
+     * of contradiction, so allow the heuristic match).
+     */
+    private boolean isNamespaceContradicted(Set<String> candidates, String ruleNamespace) {
+        if (candidates == null || candidates.isEmpty()) {
+            return false; // No evidence → don't block
+        }
+        // Build a set of all names compatible with the rule namespace (including aliases).
+        // Use lowercased versions for comparison since namespace casing can vary
+        // (e.g., "Sensor" vs "sensor", "GeoLocationManager" vs "geoLocationManager").
+        Set<String> compatibleLower = new HashSet<>();
+        compatibleLower.add(ruleNamespace.toLowerCase(Locale.ROOT));
+        List<String> aliases = PACKAGE_ALIASES.get(ruleNamespace);
+        if (aliases != null) {
+            for (String alias : aliases) {
+                compatibleLower.add(alias.toLowerCase(Locale.ROOT));
+            }
+        }
+        // Also add derived forms:
+        // - @ohos.xxx → ohos.xxx and xxx (last segment)
+        // - kit.xxx → xxx (last segment)
+        for (String compat : new HashSet<>(compatibleLower)) {
+            String withoutAt = compat.startsWith("@") ? compat.substring(1) : compat;
+            compatibleLower.add(withoutAt);
+            int dot = withoutAt.lastIndexOf('.');
+            if (dot > 0) {
+                compatibleLower.add(withoutAt.substring(dot + 1));
+            }
+        }
+
+        // Check if ANY candidate is compatible (case-insensitive)
+        for (String candidate : candidates) {
+            if (candidate == null || candidate.isEmpty()) continue;
+            String candidateLower = candidate.toLowerCase(Locale.ROOT);
+            // Direct match
+            if (compatibleLower.contains(candidateLower)) return false;
+            // Prefix/suffix match (case-insensitive)
+            for (String compat : compatibleLower) {
+                if (compat.startsWith(candidateLower) || candidateLower.startsWith(compat)) return false;
+            }
+        }
+        // All candidates contradict
+        return true;
+    }
+
+    private boolean isMethodUniqueToNamespace(String method, List<PrivacyApiRuleWithPkg> indirectRules) {
+        if (method == null || indirectRules == null) {
+            return false;
+        }
+        int count = 0;
+        for (PrivacyApiRuleWithPkg item : indirectRules) {
+            String baseMethod = stripMethodArguments(item.rule.method);
+            if (method.equals(baseMethod)) {
+                count++;
+                if (count > 1) {
+                    return false;
+                }
+            }
+        }
+        return count == 1;
     }
 
     private SensitiveApiHit matchPrivacyConstant(
@@ -726,8 +1487,10 @@ public class PreciseSensitiveApiScanner {
         }
 
         for (PrivacyApiRuleWithPkg item : constantRules) {
-            if (!Objects.equals(item.rule.method, info.lastToken)
-                    || !namespaceMustBePredecessor(info.pathTokens, item.rule.namespace)) {
+            String baseMethod = stripMethodArguments(item.rule.method);
+
+            if (!methodMatchesPath(info, baseMethod)
+                    || !namespaceMatchesForMethod(info.pathTokens, baseMethod, item.rule.namespace)) {
                 continue;
             }
 
@@ -981,9 +1744,16 @@ public class PreciseSensitiveApiScanner {
         }
 
         if ("@unknown".equals(info.sourcePrefix)
-                || "@internal".equals(info.sourcePrefix)
-                || "@bundle".equals(info.sourcePrefix)) {
+                || "@internal".equals(info.sourcePrefix)) {
             return false;
+        }
+
+        // @bundle names may resolve to system APIs if the body contains @ohos: namespace.
+        // e.g., "@bundle:com.example.app@ohos:net.http.request" → rootQualifier="com.example.app@ohos"
+        // The rawBody after stripping @bundle: is "com.example.app@ohos:net.http.request".
+        // If the rawBody contains "@ohos:", the resolved name ultimately points to a system API.
+        if ("@bundle".equals(info.sourcePrefix)) {
+            return info.rawBody != null && info.rawBody.contains("@ohos:");
         }
 
         return SYSTEM_ONLY_MODE
@@ -1043,44 +1813,6 @@ public class PreciseSensitiveApiScanner {
      *   v10 = v8.<write>
      *   v14 = v3.<sdkApiVersion>
      */
-    private boolean isSsaPhiNode(String stmtText) {
-        if (stmtText == null || stmtText.isEmpty()) {
-            return false;
-        }
-
-        // Must look like an assignment: vN = vN.<method>
-        int eq = stmtText.indexOf('=');
-        if (eq <= 0 || eq + 1 >= stmtText.length()) {
-            return false;
-        }
-
-        String lhs = stmtText.substring(0, eq).trim();
-        String rhs = stmtText.substring(eq + 1).trim();
-
-        // LHS must be a single SSA variable (v + digits)
-        if (!lhs.matches("v\\d+")) {
-            return false;
-        }
-
-        // RHS must be a VirtualCall with the SAME variable
-        if (!rhs.startsWith("VirtualCall: ")) {
-            // Could be "vN = vN.<method>" without "VirtualCall:" prefix
-            if (rhs.startsWith(lhs + ".")) {
-                return true;
-            }
-            return false;
-        }
-
-        // Inside VirtualCall: the receiver must be the same variable
-        // e.g., "VirtualCall: v10.<write>" -> receiver is "v10"
-        String inside = rhs.substring("VirtualCall: ".length()).trim();
-        if (inside.startsWith(lhs + ".")) {
-            return true;
-        }
-
-        return false;
-    }
-
     /**
      * Strict namespace matching: namespace must be the token immediately before method.
      * Prevents false matches like "foo.deviceInfo.bar.productModel" for namespace "deviceInfo".
@@ -1095,6 +1827,311 @@ public class PreciseSensitiveApiScanner {
         // pathTokens = [ns, ..., namespace, method] — namespace must be at size-2
         String actualNs = pathTokens.get(pathTokens.size() - 2);
         return namespace.equals(actualNs);
+    }
+
+    /**
+     * Strips parenthesized arguments from a method name.
+     * Handles source-level API patterns like:
+     *   "on('SensorId.ACCELEROMETER')" → "on"
+     *   "once('SensorId.ACCELEROMETER')" → "once"
+     *   "on( 'connectionStateChange')" → "on"
+     *
+     * In the binary IR, method arguments are not part of the resolved API name,
+     * so rules that encode argument patterns in the method field must have those
+     * arguments stripped before matching against pathTokens.
+     *
+     * @param method The rule method field, possibly containing parenthesized arguments
+     * @return The base method name without arguments, or the original string if no parentheses
+     */
+    private String stripMethodArguments(String method) {
+        if (method == null || method.isEmpty()) {
+            return method;
+        }
+        int parenIndex = method.indexOf('(');
+        if (parenIndex > 0) {
+            return method.substring(0, parenIndex).trim();
+        }
+        return method;
+    }
+
+    /**
+     * Checks whether a rule's method name matches the path tokens of a resolved API name.
+     *
+     * Handles both simple method names (e.g., "uploadFile") and compound/dotted
+     * method names (e.g., "agent.create") that arise when the source-level API
+     * uses a sub-namespace + method pattern.
+     *
+     * Simple method: exact match against the last token in pathTokens.
+     *   method="uploadFile", pathTokens=[net, http, uploadFile] → lastToken="uploadFile" ✓
+     *
+     * Dotted method: the method tokens must match the suffix of pathTokens.
+     *   method="agent.create", pathTokens=[request, agent, create] → suffix [agent, create] ✓
+     *
+     * @param info       Resolved name info with pathTokens and lastToken
+     * @param baseMethod The method name (after stripping parenthesized arguments)
+     * @return true if the method matches the path
+     */
+    private boolean methodMatchesPath(ResolvedNameInfo info, String baseMethod) {
+        if (baseMethod == null || baseMethod.isEmpty() || !info.valid) {
+            return false;
+        }
+
+        // Simple case: no dots — exact match on lastToken
+        if (!baseMethod.contains(".")) {
+            return Objects.equals(baseMethod, info.lastToken);
+        }
+
+        // Dotted method: split into tokens and match suffix of pathTokens.
+        // e.g., method="agent.create" → methodTokens=[agent, create]
+        //       pathTokens=[request, agent, create] → suffix matches ✓
+        String[] methodTokens = baseMethod.split("\\.");
+        if (methodTokens.length == 0) {
+            return false;
+        }
+
+        if (info.pathTokens == null || info.pathTokens.size() < methodTokens.length) {
+            return false;
+        }
+
+        // Check that the last methodTokens.length tokens of pathTokens match
+        int offset = info.pathTokens.size() - methodTokens.length;
+        for (int i = 0; i < methodTokens.length; i++) {
+            if (!methodTokens[i].equals(info.pathTokens.get(offset + i))) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /**
+     * HarmonyOS SDK namespace aliases: maps each namespace to its equivalent
+     * alternative names. In HarmonyOS, the same API can be imported via
+     * different namespace paths (e.g., @ohos.geoLocationManager vs
+     * @kit.LocationKit). When matching rules, we must accept any alias.
+     *
+     * Ported from the source-level tool's PACKAGE_ALIASES table.
+     */
+    private static final Map<String, List<String>> PACKAGE_ALIASES = Map.ofEntries(
+            Map.entry("@ohos.distributedDeviceManager", List.of("@kit.DistributedServiceKit")),
+            Map.entry("@kit.DistributedServiceKit", List.of("@ohos.distributedDeviceManager")),
+            Map.entry("@ohos.deviceInfo", List.of("@kit.BasicServicesKit")),
+            Map.entry("@kit.BasicServicesKit", List.of("@ohos.deviceInfo", "@ohos.request", "@ohos.pasteboard", "@ohos.account.osAccount", "@ohos.account.appAccount")),
+            Map.entry("@ohos.multimedia.audio", List.of("@kit.AudioKit")),
+            Map.entry("@kit.AudioKit", List.of("@ohos.multimedia.audio")),
+            Map.entry("@ohos.multimedia.camera", List.of("@kit.CameraKit")),
+            Map.entry("@kit.CameraKit", List.of("@ohos.multimedia.camera")),
+            Map.entry("@ohos.account.osAccount", List.of("@kit.BasicServicesKit")),
+            Map.entry("@ohos.account.appAccount", List.of("@kit.BasicServicesKit")),
+            Map.entry("@ohos.geoLocationManager", List.of("@kit.LocationKit", "@ohos.geolocation")),
+            Map.entry("@ohos.geolocation", List.of("@kit.LocationKit", "@ohos.geoLocationManager")),
+            Map.entry("@kit.LocationKit", List.of("@ohos.geoLocationManager", "@ohos.geolocation")),
+            Map.entry("@ohos.sensor", List.of("@kit.SensorServiceKit")),
+            Map.entry("@kit.SensorServiceKit", List.of("@ohos.sensor")),
+            Map.entry("@ohos.wifiManager", List.of("@kit.ConnectivityKit")),
+            Map.entry("@kit.ConnectivityKit", List.of("@ohos.wifiManager")),
+            // Namespace sub-module aliases: in the binary, APIs like identifier.oaid.getOAID()
+            // have pathTokens=["identifier","oaid","getOAID"], but the rule namespace is "identifier".
+            // The predecessor token is "oaid", not "identifier", so we need an alias mapping.
+            Map.entry("identifier", List.of("oaid"))
+    );
+
+    /**
+     * Gets all package names that are equivalent to the given package,
+     * including the package itself and all its aliases.
+     */
+    private List<String> getRulePackagesForImport(String pkg) {
+        List<String> result = new ArrayList<>();
+        result.add(pkg);
+        List<String> aliases = PACKAGE_ALIASES.get(pkg);
+        if (aliases != null) {
+            result.addAll(aliases);
+        }
+        return result;
+    }
+
+    /**
+     * Namespace matching that accounts for multi-token (dotted) method names
+     * and package aliases.
+     *
+     * For simple methods: namespace must be the immediate predecessor of the method
+     * token in pathTokens (same as {@link #namespaceMustBePredecessor}).
+     *
+     * For dotted methods like "agent.create" with namespace="request":
+     *   pathTokens = [request, agent, create]
+     *   The namespace "request" must appear immediately before the first method token "agent",
+     *   i.e., at position pathTokens.size() - methodTokenCount - 1.
+     *
+     * Additionally, if the rule's namespace has aliases (e.g., "@ohos.geoLocationManager"
+     * also matches "@kit.LocationKit"), we accept any alias at the namespace position.
+     *
+     * @param pathTokens  Tokenized path from the resolved API name
+     * @param baseMethod  The method name (after stripping parenthesized arguments)
+     * @param namespace   The required namespace from the rule
+     * @return true if namespace (or any alias) correctly precedes the method in the path
+     */
+    private boolean namespaceMatchesForMethod(List<String> pathTokens, String baseMethod, String namespace) {
+        if (pathTokens == null || namespace == null || namespace.isEmpty() || baseMethod == null) {
+            return false;
+        }
+
+        int methodTokenCount = baseMethod.contains(".") ? baseMethod.split("\\.").length : 1;
+        int namespaceIndex = pathTokens.size() - methodTokenCount - 1;
+
+        if (namespaceIndex < 0) {
+            return false;
+        }
+
+        String actualNs = pathTokens.get(namespaceIndex);
+
+        // Direct match (case-insensitive to handle "Connection" vs "connection")
+        if (namespace.equalsIgnoreCase(actualNs)) {
+            return true;
+        }
+
+        // Alias match: if the rule's namespace has aliases, check if any alias
+        // matches the actual namespace at the expected position (case-insensitive)
+        for (String alias : getRulePackagesForImport(namespace)) {
+            if (alias.equalsIgnoreCase(actualNs)) {
+                return true;
+            }
+            // Also check if the last segment of the alias matches (e.g., "@kit.LocationKit" → "LocationKit")
+            int dot = alias.lastIndexOf('.');
+            if (dot > 0 && alias.substring(dot + 1).equalsIgnoreCase(actualNs)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Extracts the argument pattern from a parenthesized method name.
+     * Handles patterns like:
+     *   "on('SensorId.ACCELEROMETER')" → "SensorId.ACCELEROMETER"
+     *   "once('SensorId.ACCELEROMETER')" → "SensorId.ACCELEROMETER"
+     *   "on('locationChange')" → "locationChange"
+     *   "on( 'connectionStateChange')" → "connectionStateChange"
+     *
+     * The extracted argument is used for argument-based matching: we check
+     * whether the CallStmt's actual arguments contain a StringConstant matching
+     * this pattern. This enables distinguishing sensor.on(ACCELEROMETER) from
+     * sensor.on(GYROSCOPE) for correct permission attribution.
+     *
+     * @param method The rule method field, possibly containing parenthesized arguments
+     * @return The argument pattern (without quotes), or null if no parentheses found
+     */
+    private String extractMethodArgument(String method) {
+        if (method == null || method.isEmpty()) {
+            return null;
+        }
+        int openParen = method.indexOf('(');
+        if (openParen < 0) {
+            return null;
+        }
+        int closeParen = method.lastIndexOf(')');
+        if (closeParen <= openParen) {
+            return null;
+        }
+        String arg = method.substring(openParen + 1, closeParen).trim();
+        // Strip surrounding quotes if present
+        if (arg.startsWith("'") && arg.endsWith("'") && arg.length() >= 2) {
+            arg = arg.substring(1, arg.length() - 1);
+        } else if (arg.startsWith("\"") && arg.endsWith("\"") && arg.length() >= 2) {
+            arg = arg.substring(1, arg.length() - 1);
+        }
+        return arg.isEmpty() ? null : arg;
+    }
+
+    /**
+     * Checks whether a CallStmt's arguments contain a value matching the expected argument pattern.
+     *
+     * This is the core of argument-based matching. When a rule specifies a method with
+     * parenthesized arguments (e.g., sensor.on('SensorId.ACCELEROMETER')), we need to verify
+     * that the actual call site passes an argument consistent with that pattern.
+     *
+     * Matching strategy:
+     * 1. If the expected argument contains a dot (e.g., 'SensorId.ACCELEROMETER'), check if
+     *    any StringConstant argument contains the tail segment (e.g., 'ACCELEROMETER').
+     *    This handles cases where the enum reference is compiled to a partial string.
+     * 2. For simple arguments without dots, check for exact substring match in StringConstant values.
+     * 3. Fall back to stmtText pattern matching when call arguments cannot be resolved.
+     *
+     * @param stmt              The CallStmt to inspect
+     * @param stmtText          String representation of the statement (for fallback matching)
+     * @param expectedArg       The expected argument pattern from the rule
+     * @return true if the statement's arguments match the expected pattern
+     */
+    private boolean callStmtArgsMatchArgumentPattern(Stmt stmt, String stmtText, String expectedArg) {
+        if (expectedArg == null || expectedArg.isEmpty()) {
+            return true;
+        }
+
+        // Try to extract StringConstant arguments from the CallStmt
+        if (stmt instanceof CallStmt) {
+            CallStmt callStmt = (CallStmt) stmt;
+            try {
+                var callExpr = callStmt.getCallExpr();
+                if (callExpr != null) {
+                    var argList = callExpr.getArgList();
+                    if (argList != null) {
+                        for (Object arg : argList) {
+                            if (arg instanceof com.huawei.hianalyzer.ir.value.constant.StringConstant) {
+                                String argValue = ((com.huawei.hianalyzer.ir.value.constant.StringConstant) arg).getValue();
+                                if (argValue != null && argumentMatchesPattern(argValue, expectedArg)) {
+                                    return true;
+                                }
+                            }
+                        }
+                    }
+                }
+            } catch (Throwable ignored) {
+                // Fall through to stmtText matching
+            }
+        }
+
+        // Fallback: check stmtText for the expected argument pattern.
+        // This handles cases where the argument is an SSA variable or enum constant
+        // that cannot be resolved to a StringConstant at analysis time.
+        // We check for the argument's tail segment (after the last dot) to handle
+        // enum-qualified patterns like 'SensorId.ACCELEROMETER'.
+        String argTail = expectedArg.contains(".") ? expectedArg.substring(expectedArg.lastIndexOf('.') + 1) : expectedArg;
+        return stmtText != null && (
+                stmtText.contains(expectedArg) ||  // Full pattern match
+                stmtText.contains(argTail)          // Tail-only match (for partial enum refs)
+        );
+    }
+
+    /**
+     * Checks whether an actual argument value matches the expected argument pattern.
+     * Supports both exact match and suffix match for enum-qualified patterns.
+     *
+     * @param actualArg   The actual argument value (e.g., from StringConstant)
+     * @param expectedArg The expected pattern from the rule (e.g., "SensorId.ACCELEROMETER")
+     * @return true if the actual argument matches the expected pattern
+     */
+    private boolean argumentMatchesPattern(String actualArg, String expectedArg) {
+        if (actualArg == null || expectedArg == null) {
+            return false;
+        }
+        // Exact match
+        if (actualArg.equals(expectedArg)) {
+            return true;
+        }
+        // Suffix match: for enum-qualified patterns, check if the tail matches
+        // e.g., actual="ACCELEROMETER", expected="SensorId.ACCELEROMETER" → match
+        String expectedTail = expectedArg.contains(".") ? expectedArg.substring(expectedArg.lastIndexOf('.') + 1) : expectedArg;
+        if (actualArg.equals(expectedTail)) {
+            return true;
+        }
+        // Case-insensitive suffix match for robustness
+        if (actualArg.equalsIgnoreCase(expectedTail)) {
+            return true;
+        }
+        // Partial match: expected is substring of actual (for extended enum names)
+        if (actualArg.contains(expectedArg)) {
+            return true;
+        }
+        return false;
     }
 
     /**
@@ -1209,6 +2246,7 @@ public class PreciseSensitiveApiScanner {
         Deque<BasicBlock> queue = new ArrayDeque<>();
         queue.add(entry);
         visited.add(entry);
+        
 
         while (!queue.isEmpty()) {
             BasicBlock current = queue.poll();
@@ -1737,6 +2775,44 @@ public class PreciseSensitiveApiScanner {
         } catch (Throwable t) {
             return -1;
         }
+    }
+
+    private boolean isSsaPhiNode(String stmtText) {
+        if (stmtText == null || stmtText.isEmpty()) {
+            return false;
+        }
+
+        // Must look like an assignment: vN = vN.<method>
+        int eq = stmtText.indexOf('=');
+        if (eq <= 0 || eq + 1 >= stmtText.length()) {
+            return false;
+        }
+
+        String lhs = stmtText.substring(0, eq).trim();
+        String rhs = stmtText.substring(eq + 1).trim();
+
+        // LHS must be a single SSA variable (v + digits)
+        if (!lhs.matches("v\\d+")) {
+            return false;
+        }
+
+        // RHS must be a VirtualCall with the SAME variable
+        if (!rhs.startsWith("VirtualCall: ")) {
+            // Could be "vN = vN.<method>" without "VirtualCall:" prefix
+            if (rhs.startsWith(lhs + ".")) {
+                return true;
+            }
+            return false;
+        }
+
+        // Inside VirtualCall: the receiver must be the same variable
+        // e.g., "VirtualCall: v10.<write>" -> receiver is "v10"
+        String inside = rhs.substring("VirtualCall: ".length()).trim();
+        if (inside.startsWith(lhs + ".")) {
+            return true;
+        }
+
+        return false;
     }
 
     private String safe(Object obj) {
