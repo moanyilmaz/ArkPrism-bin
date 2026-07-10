@@ -53,7 +53,7 @@ public class Main {
     private static final String DEFAULT_RULE_JSON = "config/privacy_apis.json";
     private static final String DEFAULT_PROFILE_COMBINATION_JSON = "config/profile_combinations.json";
     private static final String DEFAULT_NATIVE_RULE_JSON = "config/native_privacy_apis.json";
-    private static final String DEFAULT_OUTPUT_DIR = "benchmark_output";
+    private static final String DEFAULT_OUTPUT_DIR = "out";
 
     public static void main(String[] args) throws Exception {
         String timestamp = new SimpleDateFormat("yyyyMMdd_HHmmss").format(new Date());

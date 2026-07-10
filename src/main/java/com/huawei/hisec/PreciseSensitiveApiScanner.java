@@ -12,6 +12,9 @@ import com.huawei.hianalyzer.analysis.graph.cfg.BasicBlock;
 import com.huawei.hianalyzer.analysis.graph.cfg.BlockGraph;
 import com.huawei.hianalyzer.analysis.graph.cfg.StmtGraph;
 import com.huawei.hianalyzer.analysis.graph.callgraph.pta.andersen.Andersen;
+import com.huawei.hianalyzer.common.base.BaseClass;
+import com.huawei.hianalyzer.common.type.InstanceType;
+import com.huawei.hianalyzer.common.type.Type;
 import com.huawei.hianalyzer.dataflow.ifds.analysis.taint.AliasManager;
 import com.huawei.hianalyzer.frontend.metainterface.SourceLang;
 import com.huawei.hianalyzer.ir.bodytransformer.ssa.SSA;
@@ -1217,6 +1220,14 @@ public class PreciseSensitiveApiScanner {
                             }
                         }
                     }
+
+                    // Strategy 3: Trace the base variable's assignment to find factory method return type.
+                    // When PTA can't resolve factory methods (e.g., getAudioManager() → AudioManager),
+                    // we trace back to the assignment statement and use FunctionRef.getReturnType()
+                    // to get the declared return type from SDK metadata.
+                    if (candidates.isEmpty()) {
+                        candidates.addAll(inferNamespaceFromAssignment(base, stmt, andersen));
+                    }
                 }
             }
         } catch (Throwable ignored) {
@@ -1334,6 +1345,171 @@ public class PreciseSensitiveApiScanner {
             }
         } catch (Throwable ignored) {
         }
+        return candidates;
+    }
+
+    /**
+     * Infers namespace candidates by tracing the base variable's assignment back to
+     * a factory method call and extracting the declared return type via FunctionRef.
+     *
+     * This handles the common HarmonyOS pattern where:
+     *   let mgr = getAudioManager();  // factory method returns AudioManager
+     *   mgr.getAudioScene()           // InstanceCallExpr on mgr
+     *
+     * Andersen PTA cannot resolve the type of mgr because getAudioManager()'s
+     * implementation is in the SDK (not in the analyzed binary). However, the
+     * FunctionRef on the assignment CallStmt carries the declared return type
+     * from SDK metadata, which we can use directly.
+     */
+    private Set<String> inferNamespaceFromAssignment(Local base, Stmt usageStmt, Andersen andersen) {
+        Set<String> candidates = new LinkedHashSet<>();
+        try {
+            List<Stmt> defStmts = findDefinitionStmts(base, usageStmt, andersen);
+            for (Stmt defStmt : defStmts) {
+                if (defStmt instanceof CallStmt) {
+                    CallStmt defCall = (CallStmt) defStmt;
+                    try {
+                        var callExpr = defCall.getCallExpr();
+                        if (callExpr != null) {
+                            var funcRef = callExpr.getFunctionRef();
+                            if (funcRef != null) {
+                                var returnType = funcRef.getReturnType();
+                                if (returnType != null) {
+                                    candidates.addAll(
+                                            extractNamespaceCandidatesFromReturnType(returnType));
+                                }
+                            }
+                        }
+                    } catch (Throwable ignored) {}
+                }
+            }
+        } catch (Throwable ignored) {}
+        return candidates;
+    }
+
+    /**
+     * Finds the statements that define (assign to) the given Local variable.
+     * Two strategies:
+     * 1. Andersen PTA's getPointsToStmts() — returns statements that assign
+     *    values to the local's points-to set.
+     * 2. Manual scan of the containing function's body — finds CallStmts
+     *    whose LValue (result variable) matches the target Local.
+     */
+    private List<Stmt> findDefinitionStmts(Local base, Stmt usageStmt, Andersen andersen) {
+        // Strategy A: Use PTA's points-to analysis.
+        if (andersen != null) {
+            try {
+                Set<Stmt> pts = andersen.getPointsToStmts(base);
+                if (pts != null && !pts.isEmpty()) {
+                    return new ArrayList<>(pts);
+                }
+            } catch (Throwable ignored) {}
+        }
+
+        // Strategy B: Scan the containing function's statements.
+        try {
+            HiFunction func = usageStmt.getHiFunction();
+            if (func != null && func.getBody() != null) {
+                var stmts = func.getBody().getStmts();
+                if (stmts != null) {
+                    for (Stmt s : stmts) {
+                        if (s instanceof CallStmt) {
+                            CallStmt cs = (CallStmt) s;
+                            try {
+                                var lValue = cs.getLValue();
+                                if (lValue != null && lValue == base) {
+                                    return Collections.singletonList(s);
+                                }
+                            } catch (Throwable ignored) {}
+                        }
+                    }
+                }
+            }
+        } catch (Throwable ignored) {}
+
+        return Collections.emptyList();
+    }
+
+    /**
+     * Extracts namespace candidates from a Type object, typically the return type
+     * of a factory method obtained via FunctionRef.getReturnType().
+     *
+     * Handles:
+     * - InstanceType: resolves to BaseClass, extracts class name, package name,
+     *   and ForeignClass metadata (importName, fromPath).
+     * - Generic fallback: uses type.toString() to extract the first segment.
+     */
+    private Set<String> extractNamespaceCandidatesFromReturnType(Type returnType) {
+        Set<String> candidates = new LinkedHashSet<>();
+        if (returnType == null) return candidates;
+
+        try {
+            // Handle InstanceType: resolve to BaseClass and extract namespace.
+            if (returnType instanceof InstanceType) {
+                InstanceType instType = (InstanceType) returnType;
+                var classRef = instType.getClassRef();
+                if (classRef != null) {
+                    BaseClass<?, ?> cls = classRef.resolve();
+                    if (cls != null) {
+                        // Class name (e.g., "AudioManager", "CameraManager")
+                        String name = cls.getName();
+                        if (name != null && !name.isEmpty()) {
+                            int dot = name.lastIndexOf('.');
+                            String lastName = dot >= 0 ? name.substring(dot + 1) : name;
+                            if (!lastName.isEmpty() && !lastName.equals("Object")
+                                    && !lastName.equals("unknown")) {
+                                candidates.add(lastName);
+                            }
+                            if (!name.equals(lastName)) {
+                                candidates.add(name);
+                            }
+                        }
+                        // Package name last segment
+                        String pkg = cls.getPackageName();
+                        if (pkg != null && !pkg.isEmpty()) {
+                            int lastDot = pkg.lastIndexOf('.');
+                            String lastSeg = lastDot >= 0 ? pkg.substring(lastDot + 1) : pkg;
+                            if (!lastSeg.isEmpty() && !lastSeg.equals("Object")
+                                    && !lastSeg.equals("unknown")) {
+                                candidates.add(lastSeg);
+                            }
+                        }
+                        // For ForeignClass (SDK types), extract from IBaseForeign
+                        if (cls.isForeign()) {
+                            try {
+                                var ibf = (com.huawei.hianalyzer.common.base.IBaseForeign) cls;
+                                String fromPath = ibf.getFromPath();
+                                if (fromPath != null && !fromPath.isEmpty()) {
+                                    String path = fromPath.startsWith("@") ? fromPath.substring(1) : fromPath;
+                                    if (!path.isEmpty()) {
+                                        candidates.add(path);
+                                        int lastDot = path.lastIndexOf('.');
+                                        if (lastDot > 0) {
+                                            candidates.add(path.substring(lastDot + 1));
+                                        }
+                                    }
+                                }
+                                String importName = ibf.getImportName();
+                                if (importName != null && !importName.isEmpty()) {
+                                    candidates.add(importName);
+                                }
+                            } catch (Throwable ignored) {}
+                        }
+                    }
+                }
+            }
+
+            // Generic fallback: use type's string representation.
+            String typeStr = returnType.toString();
+            if (typeStr != null && !typeStr.isEmpty()) {
+                int dot = typeStr.indexOf('.');
+                String ns = dot > 0 ? typeStr.substring(0, dot) : typeStr;
+                if (!ns.isEmpty() && !ns.equals("unknown") && !ns.equals("Object")) {
+                    candidates.add(ns);
+                }
+            }
+        } catch (Throwable ignored) {}
+
         return candidates;
     }
 
