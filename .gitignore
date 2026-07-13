@@ -4,13 +4,7 @@ target/
 !**/src/test/**/target/
 
 ### IntelliJ IDEA ###
-.idea/modules.xml
-.idea/jarRepositories.xml
-.idea/compiler.xml
-.idea/libraries/
-.idea/workspace.xml
-.idea/runConfigurations/
-.idea/dictionaries/
+.idea/
 *.iws
 *.iml
 *.ipr
@@ -56,5 +50,19 @@ lib/                 # Huawei JAR files (copy from internal repo)
 
 ### Sample apps (test data, not source code) ###
 samples/
+samples_decompiled/
 input/
+benchmark_input/
+benchmark_evaluation/
+benchmark_output/
 .git_old/
+
+### Misc generated files ###
+META-INF/
+privacy_api_keys.txt
+reformat_gt.py
+evaluate_benchmark.js
+evaluate_benchmark_v2.js
+abc-analyzer/
+archive/
+README-old.md
