@@ -38,6 +38,14 @@ import java.util.stream.Collectors;
 public class PreciseSensitiveApiScanner {
 
     private static final boolean SYSTEM_ONLY_MODE = false;
+
+    /**
+     * Enable CAIR (Conflict-Aware and Alias-Consistent API Identity Recovery) algorithm.
+     * When true, indirect calls are resolved in batch using alias component analysis,
+     * multi-evidence scoring, and entropy-based ambiguity assessment instead of the
+     * per-call-site heuristic cascade. When false, falls back to the original logic.
+     */
+    private static final boolean USE_CAIR = true;
     /**
      * Enable SSA transformation before scanning.
      * SSA converts phi nodes and copies into explicit SSA form, enabling more accurate
@@ -801,6 +809,13 @@ public class PreciseSensitiveApiScanner {
         // (function, namespace, method) as an API_MAP entry, it's redundant.
         Set<String> apiMapFunctionMethodKeys = new HashSet<>();
 
+        // ── CAIR batch collection ──
+        // When USE_CAIR=true, collect all indirect call sites into a batch,
+        // resolve them with CaiResolver at the end, then merge results.
+        List<Object[]> cairCallSiteData = USE_CAIR ? new ArrayList<>() : null;
+        Map<Stmt, String[]> cairStmtMeta = USE_CAIR ? new LinkedHashMap<>() : null;
+        // meta: [layer, sourceKind, isSsaPattern]
+
         for (Map.Entry<Stmt, String> entry : stmtApiMap.entrySet()) {
             Stmt stmt = entry.getKey();
             String fullApiName = normalizeFullName(entry.getValue());
@@ -828,13 +843,20 @@ public class PreciseSensitiveApiScanner {
                 continue;
             }
 
-            SensitiveApiHit indirectHit = matchIndirectCall(
-                    stmt, info, fileName, functionName, indirectRules, "BODY_HIT", "API_MAP", andersen, hiFile, cg
-            );
-            if (indirectHit != null) {
-                results.add(indirectHit);
-                stmtsWithApiMapHit.add(stmt);
-                apiMapFunctionMethodKeys.add(functionName + "|" + indirectHit.namespace + "|" + indirectHit.method);
+            // Indirect call: use CAIR or original path
+            if (USE_CAIR) {
+                // Collect for batch processing
+                cairCallSiteData.add(new Object[]{stmt, fullApiName, fileName, functionName});
+                cairStmtMeta.put(stmt, new String[]{"BODY_HIT", "API_MAP", "false"});
+            } else {
+                SensitiveApiHit indirectHit = matchIndirectCall(
+                        stmt, info, fileName, functionName, indirectRules, "BODY_HIT", "API_MAP", andersen, hiFile, cg
+                );
+                if (indirectHit != null) {
+                    results.add(indirectHit);
+                    stmtsWithApiMapHit.add(stmt);
+                    apiMapFunctionMethodKeys.add(functionName + "|" + indirectHit.namespace + "|" + indirectHit.method);
+                }
             }
         }
 
@@ -846,30 +868,11 @@ public class PreciseSensitiveApiScanner {
                 continue;
             }
 
-            // Cross-map deduplication: if this Stmt already produced an API_MAP hit,
-            // skip it in the FIELD_MAP loop. The API_MAP hit contains the full call
-            // signature (e.g., "v10 = VirtualCall: v2.<uploadFile>(v4, v5)"), while
-            // the FIELD_MAP hit only has the property reference (e.g., "v10 = v10.<uploadFile>").
-            // Keeping both would double-count the same call site.
             if (stmtsWithApiMapHit.contains(stmt)) {
                 continue;
             }
 
             String stmtText = safe(stmt);
-
-            // SSA phi/copy pattern: "vN = vN.<method>" where LHS == RHS variable.
-            // In the FIELD_MAP, this pattern arises for two reasons:
-            //   1. Redundant: The API_MAP already captured the full call (e.g.,
-            //      "v9 = VirtualCall: v1.<request>(v4, v2, v5)"), and the FIELD_MAP
-            //      has the property reference form ("v9 = v9.<request>"). Skipping
-            //      these avoids double-counting the same call site.
-            //   2. Legitimate: Property accesses like "v10 = v10.<brand>" for
-            //      constant APIs (deviceInfo.brand) have no corresponding API_MAP entry,
-            //      so the FIELD_MAP is the only source. These must NOT be filtered.
-            //
-            // Strategy: When isSsaPhiNode matches, still try matchPrivacyConstant
-            // (which handles constant/property APIs), but skip matchDirectCall and
-            // matchIndirectCall (which would produce redundant call-site entries).
             boolean isSsaPattern = isSsaPhiNode(stmtText);
 
             ResolvedNameInfo info = parseResolvedName(fullFieldName);
@@ -889,19 +892,20 @@ public class PreciseSensitiveApiScanner {
                 continue;
             }
 
-            // For SSA phi patterns (vN = vN.<method>), skip matchDirectCall because
-            // the API_MAP already has the full call signature. For matchIndirectCall
-            // (directCall=false rules like deviceInfo.ODID), only add the hit if
-            // the API_MAP doesn't already have an entry for the same
-            // (function, namespace, method) — otherwise it's a redundant duplicate.
             if (isSsaPattern) {
-                SensitiveApiHit indirectChain = matchIndirectCall(
-                        stmt, info, fileName, functionName, indirectRules, "CHAIN_EVIDENCE", "FIELD_MAP", andersen, hiFile, cg
-                );
-                if (indirectChain != null) {
-                    String fmKey = functionName + "|" + indirectChain.namespace + "|" + indirectChain.method;
-                    if (!apiMapFunctionMethodKeys.contains(fmKey)) {
-                        results.add(indirectChain);
+                if (USE_CAIR) {
+                    // Collect for batch processing
+                    cairCallSiteData.add(new Object[]{stmt, fullFieldName, fileName, functionName});
+                    cairStmtMeta.put(stmt, new String[]{"CHAIN_EVIDENCE", "FIELD_MAP", "true"});
+                } else {
+                    SensitiveApiHit indirectChain = matchIndirectCall(
+                            stmt, info, fileName, functionName, indirectRules, "CHAIN_EVIDENCE", "FIELD_MAP", andersen, hiFile, cg
+                    );
+                    if (indirectChain != null) {
+                        String fmKey = functionName + "|" + indirectChain.namespace + "|" + indirectChain.method;
+                        if (!apiMapFunctionMethodKeys.contains(fmKey)) {
+                            results.add(indirectChain);
+                        }
                     }
                 }
                 continue;
@@ -915,11 +919,60 @@ public class PreciseSensitiveApiScanner {
                 continue;
             }
 
-            SensitiveApiHit indirectChain = matchIndirectCall(
-                    stmt, info, fileName, functionName, indirectRules, "CHAIN_EVIDENCE", "FIELD_MAP", andersen, hiFile, cg
-            );
-            if (indirectChain != null) {
-                results.add(indirectChain);
+            // Indirect call: use CAIR or original path
+            if (USE_CAIR) {
+                cairCallSiteData.add(new Object[]{stmt, fullFieldName, fileName, functionName});
+                cairStmtMeta.put(stmt, new String[]{"CHAIN_EVIDENCE", "FIELD_MAP", "false"});
+            } else {
+                SensitiveApiHit indirectChain = matchIndirectCall(
+                        stmt, info, fileName, functionName, indirectRules, "CHAIN_EVIDENCE", "FIELD_MAP", andersen, hiFile, cg
+                );
+                if (indirectChain != null) {
+                    results.add(indirectChain);
+                }
+            }
+        }
+
+        // ── CAIR batch resolution ──
+        if (USE_CAIR && cairCallSiteData != null && !cairCallSiteData.isEmpty()) {
+            Map<Stmt, CaiResolver.ResolutionResult> cairResults = CaiResolver.resolve(
+                    cairCallSiteData, indirectRules, andersen, cg, hiFile);
+
+            for (Map.Entry<Stmt, CaiResolver.ResolutionResult> entry : cairResults.entrySet()) {
+                Stmt stmt = entry.getKey();
+                CaiResolver.ResolutionResult rr = entry.getValue();
+                if (rr.bestCandidate == null) continue;
+
+                // Skip ambiguous results — they match but with low confidence
+                if (rr.isAmbiguous) {
+                    Logger.log("  [CAIR] Ambiguous (entropy=" + String.format("%.2f", rr.entropy)
+                            + "): " + rr.callSite.methodName + " → " + rr.bestCandidate.namespace);
+                    continue;
+                }
+
+                String[] meta = cairStmtMeta.get(stmt);
+                String layer = meta != null ? meta[0] : "BODY_HIT";
+                String sourceKind = meta != null ? meta[1] : "API_MAP";
+                boolean isSsa = meta != null && "true".equals(meta[2]);
+
+                SensitiveApiHit hit = CaiResolver.toSensitiveApiHit(rr, layer, sourceKind);
+                if (hit == null) continue;
+
+                // For SSA patterns, apply the same cross-map dedup as the original path
+                if (isSsa) {
+                    String fmKey = hit.function + "|" + hit.namespace + "|" + hit.method;
+                    if (apiMapFunctionMethodKeys.contains(fmKey)) {
+                        continue;
+                    }
+                }
+
+                results.add(hit);
+                stmtsWithApiMapHit.add(stmt);
+                apiMapFunctionMethodKeys.add(hit.function + "|" + hit.namespace + "|" + hit.method);
+
+                if (rr.certificate != null) {
+                    Logger.log("  [CAIR] " + rr.certificate.decisionRationale);
+                }
             }
         }
 

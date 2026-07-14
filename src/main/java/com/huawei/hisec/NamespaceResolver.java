@@ -93,7 +93,8 @@ public class NamespaceResolver {
      * Key: factory method name (lowercase, without namespace prefix)
      * Value: namespace of the returned object's API methods
      */
-    private static final Map<String, String> FACTORY_METHOD_NAMESPACE_MAP = Map.ofEntries(
+    // Package-private: accessible by CaiResolver
+    static final Map<String, String> FACTORY_METHOD_NAMESPACE_MAP = Map.ofEntries(
             // audio module
             Map.entry("getaudiomanager", "audio"),
             Map.entry("createaudiostream", "audio"),
@@ -536,7 +537,8 @@ public class NamespaceResolver {
      * Handles both StaticCallExpr and InstanceCallExpr by getting the
      * function reference's name or the call expression's method name.
      */
-    private static String extractMethodNameFromCallExpr(
+    // Package-private: accessible by CaiResolver
+    static String extractMethodNameFromCallExpr(
             com.huawei.hianalyzer.ir.value.expr.CallExpr callExpr) {
         try {
             // Try FunctionRef first — works for both static and instance calls
@@ -900,7 +902,8 @@ public class NamespaceResolver {
      * returns the shortest form among the namespace and its aliases.
      * This ensures that SystemPasteboard and pasteboard both map to the same key.
      */
-    private static String getCanonicalNamespace(String nsLower) {
+    // Package-private: accessible by CaiResolver
+    static String getCanonicalNamespace(String nsLower) {
         if (nsLower == null || nsLower.isEmpty()) return nsLower;
         // Check if this namespace has aliases — use the shortest as canonical
         List<String> candidates = new ArrayList<>();
