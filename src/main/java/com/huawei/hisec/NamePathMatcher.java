@@ -106,8 +106,12 @@ public class NamePathMatcher {
         }
 
         // @bundle names may resolve to system APIs if the body contains @ohos: namespace.
+        // Also accept @bundle names where the body doesn't contain @ohos: — these are
+        // calls resolved from the application's own code (e.g., getSupportedCameras
+        // resolved as @bundle:com.legado...camera.#GLOBAL:unknown getSupportedCameras(unknown)).
+        // Such calls may still be privacy-sensitive API calls that need detection.
         if ("@bundle".equals(info.sourcePrefix)) {
-            return info.rawBody != null && info.rawBody.contains("@ohos:");
+            return true;
         }
 
         // SYSTEM_ONLY_MODE is false in the scanner, so accept both @system and @import

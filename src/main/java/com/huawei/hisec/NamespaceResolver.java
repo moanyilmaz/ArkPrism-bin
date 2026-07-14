@@ -3,6 +3,7 @@ package com.huawei.hisec;
 import com.huawei.hianalyzer.common.base.BaseClass;
 import com.huawei.hianalyzer.analysis.base.HiClass;
 import com.huawei.hianalyzer.analysis.base.HiFile;
+import com.huawei.hianalyzer.analysis.graph.callgraph.CallGraph;
 import com.huawei.hianalyzer.analysis.graph.callgraph.pta.andersen.Andersen;
 import com.huawei.hianalyzer.common.type.InstanceType;
 import com.huawei.hianalyzer.common.type.Type;
@@ -59,7 +60,86 @@ public class NamespaceResolver {
             // Namespace sub-module aliases: in the binary, APIs like identifier.oaid.getOAID()
             // have pathTokens=["identifier","oaid","getOAID"], but the rule namespace is "identifier".
             // The predecessor token is "oaid", not "identifier", so we need an alias mapping.
-            Map.entry("identifier", List.of("oaid"))
+            Map.entry("identifier", List.of("oaid")),
+            // Class-to-module aliases: privacy_apis.json uses both the class name
+            // (e.g., SystemPasteboard) and the module name (e.g., pasteboard) as
+            // the namespace for the same API. These must be treated as equivalent.
+            Map.entry("SystemPasteboard", List.of("pasteboard", "@ohos.pasteboard")),
+            Map.entry("pasteboard", List.of("SystemPasteboard", "@ohos.pasteboard")),
+            // Class-to-module aliases: connection APIs use NetConnection as class name
+            // in the binary, but the rule namespace is "connection".
+            Map.entry("NetConnection", List.of("connection", "@ohos.net.connection")),
+            Map.entry("connection", List.of("NetConnection", "@ohos.net.connection")),
+            // Class-to-module aliases: userAuth APIs use UserAuth as class name
+            // in the binary, but the rule namespace is "userAuth".
+            Map.entry("UserAuth", List.of("userAuth", "@ohos.userIAM.userAuth")),
+            Map.entry("userAuth", List.of("UserAuth", "@ohos.userIAM.userAuth"))
+    );
+
+    // ======================================================
+    // HarmonyOS SDK factory method → namespace mapping
+    // ======================================================
+
+    /**
+     * Maps factory method names to their corresponding namespace.
+     * When Andersen PTA cannot resolve the type of objects returned by
+     * SDK factory methods (because the implementation is in the SDK, not
+     * in the analyzed app), this mapping provides a hardcoded fallback.
+     *
+     * For example, audio.getAudioManager() returns an AudioManager object,
+     * but PTA can't infer this because getAudioManager()'s body is external.
+     * This map tells us that getAudioManager → "audio" namespace.
+     *
+     * Key: factory method name (lowercase, without namespace prefix)
+     * Value: namespace of the returned object's API methods
+     */
+    private static final Map<String, String> FACTORY_METHOD_NAMESPACE_MAP = Map.ofEntries(
+            // audio module
+            Map.entry("getaudiomanager", "audio"),
+            Map.entry("createaudiostream", "audio"),
+            Map.entry("createaudiorenderer", "audio"),
+            Map.entry("createaudiocapturer", "audio"),
+            Map.entry("createringtone", "audio"),
+            // camera module
+            Map.entry("getcameramanager", "camera"),
+            Map.entry("createcamerainput", "camera"),
+            Map.entry("createpreviewoutput", "camera"),
+            Map.entry("createphotooutput", "camera"),
+            Map.entry("createvideooutput", "camera"),
+            Map.entry("createcapturesession", "camera"),
+            // pasteboard module
+            Map.entry("getsystempasteboard", "pasteboard"),
+            Map.entry("createpastedata", "pasteboard"),
+            Map.entry("createpasterecord", "pasteboard"),
+            // network module
+            Map.entry("getdefaultnet", "connection"),
+            Map.entry("getallnets", "connection"),
+            Map.entry("getnetcapabilities", "connection"),
+            Map.entry("getconnectionproperties", "connection"),
+            // telephony module
+            Map.entry("getdefaultcellulardataslotid", "telephony"),
+            Map.entry("getdefaultsimslotid", "telephony"),
+            Map.entry("getdefaultvoiceslotid", "telephony"),
+            // wifi module
+            Map.entry("getwifilocalmac", "wifiManager"),
+            Map.entry("getlinkedinfo", "wifiManager"),
+            Map.entry("getscaninfosync", "wifiManager"),
+            Map.entry("getscaninfos", "wifiManager"),
+            // bluetooth module
+            Map.entry("getprofileproxy", "bluetooth"),
+            Map.entry("getprofileinstance", "bluetooth"),
+            // location module
+            Map.entry("getcachedlocation", "geoLocationManager"),
+            Map.entry("getcurrentlocation", "geoLocationManager"),
+            // display module
+            Map.entry("getdefaultdisplaysync", "display"),
+            Map.entry("getdefaultdisplay", "display"),
+            Map.entry("getalldisplays", "display"),
+            // sensor module
+            Map.entry("subscribesensor", "sensor"),
+            Map.entry("unsubscribesensor", "sensor"),
+            // distributed device manager
+            Map.entry("createdevicemanager", "distributedDeviceManager")
     );
 
     // ======================================================
@@ -74,7 +154,7 @@ public class NamespaceResolver {
      * @param andersen Andersen PTA instance (may be null)
      * @return Set of namespace candidate strings
      */
-    public static Set<String> inferNamespaceCandidatesFromCallBase(Stmt stmt, Andersen andersen) {
+    public static Set<String> inferNamespaceCandidatesFromCallBase(Stmt stmt, Andersen andersen, CallGraph cg) {
         Set<String> candidates = new LinkedHashSet<>();
 
         try {
@@ -133,7 +213,27 @@ public class NamespaceResolver {
                     // we trace back to the assignment statement and use FunctionRef.getReturnType()
                     // to get the declared return type from SDK metadata.
                     if (candidates.isEmpty()) {
-                        candidates.addAll(inferNamespaceFromAssignment(base, stmt, andersen));
+                        candidates.addAll(inferNamespaceFromAssignment(base, stmt, andersen, cg));
+                    }
+
+                    // Strategy 4: Hardcoded factory method → namespace mapping.
+                    // When all dynamic strategies (PTA, static type, FunctionRef return type)
+                    // fail to produce namespace candidates, use a hardcoded map of known
+                    // HarmonyOS SDK factory methods to their corresponding namespaces.
+                    // This handles the common pattern: let mgr = getAudioManager(); mgr.getAudioScene()
+                    // where the factory method body is in the SDK and PTA cannot infer the return type.
+                    if (candidates.isEmpty()) {
+                        candidates.addAll(inferNamespaceFromFactoryMethodMap(base, stmt, andersen, cg));
+                    }
+
+                    // Strategy 5: Variable name heuristic.
+                    // HarmonyOS coding conventions typically name variables after their type
+                    // (e.g., audioManager, cameraManager, systemPasteboard). When all other
+                    // strategies fail, check if the base variable's name contains a recognizable
+                    // namespace hint. This is a last-resort heuristic to avoid FN on indirect calls
+                    // where the factory method definition is in a different function body.
+                    if (candidates.isEmpty()) {
+                        candidates.addAll(inferNamespaceFromVariableName(base));
                     }
                 }
             }
@@ -159,10 +259,10 @@ public class NamespaceResolver {
      * FunctionRef on the assignment CallStmt carries the declared return type
      * from SDK metadata, which we can use directly.
      */
-    static Set<String> inferNamespaceFromAssignment(Local base, Stmt usageStmt, Andersen andersen) {
+    static Set<String> inferNamespaceFromAssignment(Local base, Stmt usageStmt, Andersen andersen, CallGraph cg) {
         Set<String> candidates = new LinkedHashSet<>();
         try {
-            List<Stmt> defStmts = findDefinitionStmts(base, usageStmt, andersen);
+            List<Stmt> defStmts = findDefinitionStmts(base, usageStmt, andersen, cg);
             for (Stmt defStmt : defStmts) {
                 if (defStmt instanceof CallStmt) {
                     CallStmt defCall = (CallStmt) defStmt;
@@ -193,7 +293,7 @@ public class NamespaceResolver {
      * 2. Manual scan of the containing function's body — finds CallStmts
      *    whose LValue (result variable) matches the target Local.
      */
-    static List<Stmt> findDefinitionStmts(Local base, Stmt usageStmt, Andersen andersen) {
+    static List<Stmt> findDefinitionStmts(Local base, Stmt usageStmt, Andersen andersen, CallGraph cg) {
         // Strategy A: Use PTA's points-to analysis.
         if (andersen != null) {
             try {
@@ -229,7 +329,234 @@ public class NamespaceResolver {
             }
         } catch (Throwable ignored) {}
 
+        if (!results.isEmpty()) {
+            return results;
+        }
+
+        // Strategy C: Inter-procedural search via CallGraph.
+        // When the base variable is not defined in the current function,
+        // it may be a function parameter or a class field. Search for
+        // factory method calls in the calling functions (callers of the
+        // current function) that could have produced the base variable.
+        // This handles the common HarmonyOS pattern:
+        //   function aboutToAppear() { this.audioManager = getAudioManager(); }
+        //   function someMethod() { this.audioManager.getAudioScene(); }
+        if (cg != null) {
+            try {
+                HiFunction currentFunc = usageStmt.getHiFunction();
+                if (currentFunc != null) {
+                    // Search callers for factory method calls
+                    Set<Stmt> callerDefs = findFactoryMethodDefsInCallers(
+                            base, currentFunc, cg);
+                    if (!callerDefs.isEmpty()) {
+                        return new ArrayList<>(callerDefs);
+                    }
+                }
+            } catch (Throwable ignored) {}
+        }
+
         return results;
+    }
+
+    /**
+     * Searches for factory method definitions in the callers of the given function.
+     * This handles the case where a variable is assigned in one function and used
+     * in another (e.g., class field initialization in aboutToAppear() and usage
+     * in a callback method).
+     *
+     * For each caller of currentFunc, we look for CallStmts that assign to a
+     * variable whose name matches the base variable's name (since it's likely
+     * a class field accessed via 'this').
+     */
+    private static Set<Stmt> findFactoryMethodDefsInCallers(
+            Local base, HiFunction currentFunc, CallGraph cg) {
+        Set<Stmt> results = new LinkedHashSet<>();
+        String baseName = base.getName();
+        if (baseName == null || baseName.isEmpty()) return results;
+
+        try {
+            if (cg == null) return results;
+
+            // Find all functions that call currentFunc
+            Set<HiFunction> callers = new HashSet<>();
+            try {
+                callers = cg.getCallersByCallee(currentFunc);
+                if (callers == null) callers = new HashSet<>();
+            } catch (Throwable ignored) {
+                callers = new HashSet<>();
+            }
+
+            // In each caller, look for CallStmts whose LValue name matches
+            // the base variable name (for field access patterns like this.audioManager)
+            for (HiFunction caller : callers) {
+                if (caller == null || caller.getBody() == null) continue;
+                var stmts = caller.getBody().getStmts();
+                if (stmts == null) continue;
+                for (Stmt s : stmts) {
+                    if (s instanceof CallStmt) {
+                        CallStmt cs = (CallStmt) s;
+                        try {
+                            var lValue = cs.getLValue();
+                            if (lValue != null) {
+                                String lvName = lValue.getName();
+                                // Match if the LValue name is the same as the base name
+                                // (handles field access via this.x where IR uses the field name)
+                                if (baseName.equals(lvName)) {
+                                    results.add(s);
+                                }
+                                // Also match if the LValue is a field access expression
+                                // containing the base name
+                                String lvStr = lValue.toString();
+                                if (lvStr != null && lvStr.contains(baseName)) {
+                                    results.add(s);
+                                }
+                            }
+                        } catch (Throwable ignored) {}
+                    }
+                }
+            }
+        } catch (Throwable ignored) {}
+        return results;
+    }
+
+    // ======================================================
+    // Strategy 4: Hardcoded factory method → namespace mapping
+    // ======================================================
+
+    /**
+     * Infers namespace candidates by finding the factory method that assigned
+     * the base variable, then looking up the method name in a hardcoded map.
+     *
+     * This is the last-resort strategy when PTA, static type, and FunctionRef
+     * return type all fail. It works by:
+     * 1. Finding the definition statements for the base variable (same as Strategy 3)
+     * 2. Extracting the method name from the definition's CallStmt
+     * 3. Looking up the method name in FACTORY_METHOD_NAMESPACE_MAP
+     *
+     * For example, if the definition is:
+     *   audioManager = @ohos.multimedia.audio.getAudioManager()
+     * This extracts "getAudioManager", maps it to "audio", and returns {"audio"}.
+     */
+    static Set<String> inferNamespaceFromFactoryMethodMap(Local base, Stmt usageStmt, Andersen andersen, CallGraph cg) {
+        Set<String> candidates = new LinkedHashSet<>();
+        try {
+            List<Stmt> defStmts = findDefinitionStmts(base, usageStmt, andersen, cg);
+            for (Stmt defStmt : defStmts) {
+                if (defStmt instanceof CallStmt) {
+                    CallStmt defCall = (CallStmt) defStmt;
+                    try {
+                        var callExpr = defCall.getCallExpr();
+                        if (callExpr != null) {
+                            // Try to get the method name from the call expression
+                            String methodName = extractMethodNameFromCallExpr(callExpr);
+                            if (methodName != null && !methodName.isEmpty()) {
+                                String lookupKey = methodName.toLowerCase(Locale.ROOT);
+                                String mappedNs = FACTORY_METHOD_NAMESPACE_MAP.get(lookupKey);
+                                if (mappedNs != null) {
+                                    candidates.add(mappedNs);
+                                }
+                            }
+                        }
+                    } catch (Throwable ignored) {}
+                }
+            }
+        } catch (Throwable ignored) {}
+        return candidates;
+    }
+
+    // ======================================================
+    // Strategy 5: Variable name heuristic
+    // ======================================================
+
+    /**
+     * Infers namespace candidates from the base variable's name.
+     * HarmonyOS developers commonly name variables after the API class they hold:
+     *   audioManager → audio
+     *   cameraManager → camera
+     *   systemPasteboard → pasteboard
+     *   connection → connection
+     *   geoLocationManager → geoLocationManager
+     *
+     * This is a last-resort heuristic when all type-based strategies fail.
+     * It only adds candidates; the method name still needs to match a rule,
+     * and the heuristic fallback in matchIndirectCall() will validate via
+     * isMethodUniqueToNamespace() and ptaClassHasMethod().
+     */
+    static Set<String> inferNamespaceFromVariableName(Local base) {
+        Set<String> candidates = new LinkedHashSet<>();
+        if (base == null) return candidates;
+        try {
+            String varName = base.getName();
+            if (varName == null || varName.isEmpty()) return candidates;
+            String lower = varName.toLowerCase(Locale.ROOT);
+
+            // Map of variable name substrings to namespace candidates.
+            // Ordered from most specific to least specific.
+            // Only include patterns that are strongly correlated with a specific namespace.
+            String[][] namePatterns = {
+                    // audio module
+                    {"audiomanager", "audio"},
+                    {"audiorenderer", "audio"},
+                    {"audiocapturer", "audio"},
+                    // camera module
+                    {"cameramanager", "camera"},
+                    // pasteboard module
+                    {"systempasteboard", "pasteboard"},
+                    {"pasteboardobj", "pasteboard"},
+                    {"pasterecord", "pasteboard"},
+                    // network module
+                    {"netconnection", "connection"},
+                    // telephony module
+                    {"cellulardata", "telephony"},
+                    // wifi module
+                    {"wificonnection", "wifiManager"},
+                    // location module
+                    {"geolocationmanager", "geoLocationManager"},
+                    // display module
+                    {"defaultdisplay", "display"},
+                    // bluetooth
+                    {"bluetoothremote", "bluetooth"},
+                    // sensor module
+                    {"sensoragent", "sensor"},
+                    // distributed device manager
+                    {"devicemanager", "distributedDeviceManager"},
+            };
+
+            for (String[] pair : namePatterns) {
+                if (lower.contains(pair[0])) {
+                    candidates.add(pair[1]);
+                }
+            }
+        } catch (Throwable ignored) {}
+        return candidates;
+    }
+
+    /**
+     * Extracts the method name from a call expression.
+     * Handles both StaticCallExpr and InstanceCallExpr by getting the
+     * function reference's name or the call expression's method name.
+     */
+    private static String extractMethodNameFromCallExpr(
+            com.huawei.hianalyzer.ir.value.expr.CallExpr callExpr) {
+        try {
+            // Try FunctionRef first — works for both static and instance calls
+            var funcRef = callExpr.getFunctionRef();
+            if (funcRef != null) {
+                String name = funcRef.getName();
+                if (name != null && !name.isEmpty()) {
+                    // For compound names like "getAudioManager", extract the last segment
+                    int lastDot = name.lastIndexOf('.');
+                    return lastDot >= 0 ? name.substring(lastDot + 1) : name;
+                }
+            }
+            // Fallback: use the call expression's string representation
+            String exprStr = callExpr.toString();
+            if (exprStr != null && !exprStr.contains("(")) {
+                int lastDot = exprStr.lastIndexOf('.');
+                return lastDot >= 0 ? exprStr.substring(lastDot + 1) : exprStr;
+            }
+        } catch (Throwable ignored) {}
+        return null;
     }
 
     // ======================================================
@@ -536,22 +863,67 @@ public class NamespaceResolver {
      * Checks if a method name uniquely identifies a single namespace among the given rules.
      * This is used as a heuristic fallback: if only one rule has this method name,
      * we can safely match by method name alone even without namespace confirmation.
+     *
+     * Rules with the same (namespace, method) pair are treated as duplicates —
+     * they represent the same API under different systemPackage aliases
+     * (e.g., @kit.AudioKit vs @ohos.multimedia.audio), so they count as one.
      */
     public static boolean isMethodUniqueToNamespace(String method, List<PreciseSensitiveApiScanner.PrivacyApiRuleWithPkg> indirectRules) {
         if (method == null || indirectRules == null) {
             return false;
         }
-        int count = 0;
+        // Use canonical namespace keys that collapse aliases.
+        // Namespaces that are aliases of each other (e.g., SystemPasteboard vs pasteboard)
+        // represent the same API module and should count as one.
+        Set<String> seenCanonicalNamespaces = new HashSet<>();
         for (PreciseSensitiveApiScanner.PrivacyApiRuleWithPkg item : indirectRules) {
             String baseMethod = NamePathMatcher.stripMethodArguments(item.rule.method);
             if (method.equals(baseMethod)) {
-                count++;
-                if (count > 1) {
-                    return false;
+                String ns = item.rule.namespace != null ? item.rule.namespace.toLowerCase(Locale.ROOT) : "";
+                // Collapse namespace using PACKAGE_ALIASES: map to a canonical representative
+                String canonicalNs = getCanonicalNamespace(ns);
+                String key = canonicalNs + "|" + baseMethod.toLowerCase(Locale.ROOT);
+                if (!seenCanonicalNamespaces.contains(key)) {
+                    seenCanonicalNamespaces.add(key);
+                    if (seenCanonicalNamespaces.size() > 1) {
+                        return false;
+                    }
                 }
             }
         }
-        return count == 1;
+        return seenCanonicalNamespaces.size() == 1;
+    }
+
+    /**
+     * Returns a canonical namespace key that collapses aliases.
+     * If the namespace is an alias of another (via PACKAGE_ALIASES),
+     * returns the shortest form among the namespace and its aliases.
+     * This ensures that SystemPasteboard and pasteboard both map to the same key.
+     */
+    private static String getCanonicalNamespace(String nsLower) {
+        if (nsLower == null || nsLower.isEmpty()) return nsLower;
+        // Check if this namespace has aliases — use the shortest as canonical
+        List<String> candidates = new ArrayList<>();
+        candidates.add(nsLower);
+        // Check both directions: nsLower as key and nsLower as alias value
+        List<String> aliases = PACKAGE_ALIASES.get(nsLower);
+        if (aliases != null) {
+            for (String alias : aliases) {
+                candidates.add(alias.toLowerCase(Locale.ROOT));
+            }
+        }
+        // Also check if nsLower appears as a value in any PACKAGE_ALIASES entry
+        for (Map.Entry<String, List<String>> entry : PACKAGE_ALIASES.entrySet()) {
+            for (String alias : entry.getValue()) {
+                if (alias.toLowerCase(Locale.ROOT).equals(nsLower)) {
+                    candidates.add(entry.getKey().toLowerCase(Locale.ROOT));
+                    break;
+                }
+            }
+        }
+        // Return the shortest candidate as canonical
+        candidates.sort((a, b) -> a.length() - b.length());
+        return candidates.get(0);
     }
 
     /**

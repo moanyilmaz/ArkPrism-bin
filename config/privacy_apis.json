@@ -213,7 +213,7 @@
         "systemPackage": "@kit.AudioKit",
         "privacyApis": [
             {
-                "directCall": true,
+                "directCall": false,
                 "namespace": "audio",
                 "method": "getAudioScene",
                 "permission": null,
@@ -7452,7 +7452,7 @@
         "systemPackage": "@ohos.multimedia.audio",
         "privacyApis": [
             {
-                "directCall": true,
+                "directCall": false,
                 "namespace": "audio",
                 "method": "getAudioScene",
                 "permission": null,

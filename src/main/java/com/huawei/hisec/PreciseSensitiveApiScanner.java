@@ -46,6 +46,41 @@ public class PreciseSensitiveApiScanner {
      */
     private static final boolean ENABLE_SSA = false;
 
+    /**
+     * Generic verb method names that are too common to match by method name alone.
+     * When a method-only heuristic match lands on one of these names and there is
+     * no namespace evidence (no PTA candidates, no rootQualifier, no variable name),
+     * the heuristic is blocked to prevent false positives like:
+     *   - UserViewModel.register → NetConnection.register
+     *   - MyServer.stop → WebSocketServer.stop
+     */
+    private static final Set<String> GENERIC_METHOD_BLACKLIST = Set.of(
+            "register", "unregister",
+            "start", "stop", "restart",
+            "on", "off",
+            "open", "close",
+            "connect", "disconnect",
+            "send", "receive",
+            "get", "set",
+            "add", "remove",
+            "enable", "disable",
+            "init", "destroy",
+            "load", "save",
+            "create", "delete",
+            "read", "write",
+            "lock", "unlock",
+            "bind", "unbind",
+            "subscribe", "unsubscribe",
+            "show", "hide",
+            "play", "pause", "resume"
+    );
+
+    /**
+     * Cache of indirect rules for the current scan, used by isAcceptedResolvedName
+     * to check if @bundle calls match a known privacy API method name.
+     */
+    private List<PrivacyApiRuleWithPkg> indirectRulesCache = Collections.emptyList();
+
     // ======================================================
     // 1. JSON Rule Models
     // ======================================================
@@ -208,105 +243,115 @@ public class PreciseSensitiveApiScanner {
             Logger.log("\n######################################################");
             Logger.log("[*] Analyzing ABC: " + abcFile.getAbsolutePath());
 
-            HiFile hiFile = parseAbcWithV1(abcFile, result.warnings);
-            if (hiFile == null) {
-                Logger.log("[-] V1 parser failed, skipping.");
-                continue;
-            }
-            totalV1Success++;
-
-            transformWithSSA(hiFile);
-
-            // Build call graph BEFORE scanning so Andersen PTA is available
-            // for namespace inference during indirect call matching.
-            // The same CG will be reused for chain extraction in buildCallChainsForFile.
-            CallGraph cg = null;
             try {
-                Logger.log("[*] Building call graph with ANDERSEN for scanning...");
-                cg = Stage.createCallGraph(hiFile, CallGraph.CGBuildMethod.ANDERSEN, true);
+                HiFile hiFile = parseAbcWithV1(abcFile, result.warnings);
+                if (hiFile == null) {
+                    Logger.log("[-] V1 parser failed, skipping.");
+                    continue;
+                }
+                totalV1Success++;
+
+                transformWithSSA(hiFile);
+
+                // Build call graph BEFORE scanning so Andersen PTA is available
+                // for namespace inference during indirect call matching.
+                // The same CG will be reused for chain extraction in buildCallChainsForFile.
+                CallGraph cg = null;
+                try {
+                    Logger.log("[*] Building call graph with ANDERSEN for scanning...");
+                    cg = Stage.createCallGraph(hiFile, CallGraph.CGBuildMethod.ANDERSEN, true);
+                } catch (Throwable t) {
+                    String msg = "Call graph construction failed for " + abcFile.getAbsolutePath() + ": " + t.getMessage();
+                    result.warnings.add(msg);
+                    Logger.error("[-] " + msg);
+                }
+
+                List<SensitiveApiHit> hits = scanHiFile(
+                        hiFile,
+                        abcFile.getName(),
+                        directRules,
+                        indirectRules,
+                        constantRules,
+                        cg
+                );
+                Logger.log("    [*] V1 raw hits: " + hits.size());
+
+                if (hits.isEmpty()) {
+                    Logger.log("[-] No sensitive API hits in current ABC.");
+                    continue;
+                }
+
+                Logger.log("[+] Current ABC sensitive API hits: " + hits.size());
+
+                // Deduplicate ApiUsage objects with direct provenance tracking.
+                // Each deduplicated usage retains a reference to its originating hit,
+                // eliminating the need for the fragile string-key cross-matching that
+                // previously caused ~37.7% of API usages to lose their call chains.
+                List<UnifiedPrivacyReport.ApiUsage> dedupedUsages = new ArrayList<>();
+                Map<UnifiedPrivacyReport.ApiUsage, ApiUsageProvenance> usageToProvenance = new LinkedHashMap<>();
+                Set<String> seenUsageKeys = new HashSet<>();
+                Set<Stmt> sinkStmts = new LinkedHashSet<>();
+
+                for (SensitiveApiHit hit : hits) {
+                    UnifiedPrivacyReport.ApiUsage usage = convertArkTsHitToApiUsage(hit, targetDirectory, abcFile);
+
+                    // Create dedup key from usage fields
+                    String usageKey = (usage.code != null ? usage.code : "")
+                            + "|" + (usage.declaringMethod != null ? usage.declaringMethod : "")
+                            + "|" + (usage.namespace != null ? usage.namespace : "")
+                            + "|" + (usage.method != null ? usage.method : "")
+                            + "|" + (usage.sourceKind != null ? usage.sourceKind : "")
+                            + "|" + (usage.category != null ? usage.category : "");
+
+                    if (seenUsageKeys.add(usageKey)) {
+                        dedupedUsages.add(usage);
+                        usageToProvenance.put(usage, new ApiUsageProvenance(hit));
+
+                        // Any hit with a Stmt object participates in call chain construction,
+                        // regardless of layer (BODY_HIT or CHAIN_EVIDENCE). Previously,
+                        // only BODY_HIT hits were included, causing FIELD_MAP indirect-invoke
+                        // hits to be orphaned from call chain construction.
+                        if (hit.stmtObj != null) {
+                            sinkStmts.add(hit.stmtObj);
+                        }
+                    }
+                }
+
+                // Record the starting index for this file's usages in the global list
+                int dedupStartIndex = nextApiUsageIndex;
+
+                // Add deduplicated usages to the result immediately (incremental save).
+                // This ensures partial results are preserved even if a later ABC crashes.
+                for (UnifiedPrivacyReport.ApiUsage usage : dedupedUsages) {
+                    result.arktsApiUsages.add(usage);
+                }
+
+                // Advance the global index counter
+                nextApiUsageIndex += dedupedUsages.size();
+
+                // Build call chains for this file.
+                // Note: sinkStmts may be empty if all hits have no Stmt objects
+                // (e.g., pure CHAIN_EVIDENCE without stmtObj). In that case,
+                // buildCallChainsForFile will generate fallback chains for all usages.
+                buildCallChainsForFile(
+                        hiFile,
+                        abcFile,
+                        sinkStmts,
+                        usageToProvenance,
+                        dedupStartIndex,
+                        ruleJsonFile,
+                        result.callChains,
+                        result.warnings,
+                        cg
+                );
             } catch (Throwable t) {
-                String msg = "Call graph construction failed for " + abcFile.getAbsolutePath() + ": " + t.getMessage();
+                // Per-ABC error isolation: a crash in one ABC (e.g., OOM during
+                // call chain construction) must not discard results already collected
+                // from this or previous ABCs. Log the error and continue.
+                String msg = "ABC analysis crashed: " + abcFile.getAbsolutePath() + " - " + safeMessage(t);
                 result.warnings.add(msg);
                 Logger.error("[-] " + msg);
             }
-
-            List<SensitiveApiHit> hits = scanHiFile(
-                    hiFile,
-                    abcFile.getName(),
-                    directRules,
-                    indirectRules,
-                    constantRules,
-                    cg
-            );
-            Logger.log("    [*] V1 raw hits: " + hits.size());
-
-            if (hits.isEmpty()) {
-                Logger.log("[-] No sensitive API hits in current ABC.");
-                continue;
-            }
-
-            Logger.log("[+] Current ABC sensitive API hits: " + hits.size());
-
-            // Deduplicate ApiUsage objects with direct provenance tracking.
-            // Each deduplicated usage retains a reference to its originating hit,
-            // eliminating the need for the fragile string-key cross-matching that
-            // previously caused ~37.7% of API usages to lose their call chains.
-            List<UnifiedPrivacyReport.ApiUsage> dedupedUsages = new ArrayList<>();
-            Map<UnifiedPrivacyReport.ApiUsage, ApiUsageProvenance> usageToProvenance = new LinkedHashMap<>();
-            Set<String> seenUsageKeys = new HashSet<>();
-            Set<Stmt> sinkStmts = new LinkedHashSet<>();
-
-            for (SensitiveApiHit hit : hits) {
-                UnifiedPrivacyReport.ApiUsage usage = convertArkTsHitToApiUsage(hit, targetDirectory, abcFile);
-
-                // Create dedup key from usage fields
-                String usageKey = (usage.code != null ? usage.code : "")
-                        + "|" + (usage.declaringMethod != null ? usage.declaringMethod : "")
-                        + "|" + (usage.namespace != null ? usage.namespace : "")
-                        + "|" + (usage.method != null ? usage.method : "")
-                        + "|" + (usage.sourceKind != null ? usage.sourceKind : "")
-                        + "|" + (usage.category != null ? usage.category : "");
-
-                if (seenUsageKeys.add(usageKey)) {
-                    dedupedUsages.add(usage);
-                    usageToProvenance.put(usage, new ApiUsageProvenance(hit));
-
-                    // Any hit with a Stmt object participates in call chain construction,
-                    // regardless of layer (BODY_HIT or CHAIN_EVIDENCE). Previously,
-                    // only BODY_HIT hits were included, causing FIELD_MAP indirect-invoke
-                    // hits to be orphaned from call chain construction.
-                    if (hit.stmtObj != null) {
-                        sinkStmts.add(hit.stmtObj);
-                    }
-                }
-            }
-
-            // Record the starting index for this file's usages in the global list
-            int dedupStartIndex = nextApiUsageIndex;
-
-            // Add deduplicated usages to the result, maintaining index order
-            for (UnifiedPrivacyReport.ApiUsage usage : dedupedUsages) {
-                result.arktsApiUsages.add(usage);
-            }
-
-            // Advance the global index counter
-            nextApiUsageIndex += dedupedUsages.size();
-
-            // Build call chains for this file.
-            // Note: sinkStmts may be empty if all hits have no Stmt objects
-            // (e.g., pure CHAIN_EVIDENCE without stmtObj). In that case,
-            // buildCallChainsForFile will generate fallback chains for all usages.
-            buildCallChainsForFile(
-                    hiFile,
-                    abcFile,
-                    sinkStmts,
-                    usageToProvenance,
-                    dedupStartIndex,
-                    ruleJsonFile,
-                    result.callChains,
-                    result.warnings,
-                    cg
-            );
         }
 
         result.v1SuccessCount = totalV1Success;
@@ -731,6 +776,9 @@ public class PreciseSensitiveApiScanner {
     ) {
         List<SensitiveApiHit> results = new ArrayList<>();
 
+        // Cache indirect rules for isAcceptedResolvedName
+        this.indirectRulesCache = indirectRules;
+
         // Extract Andersen PTA from call graph for namespace inference
         Andersen andersen = null;
         if (cg != null && cg.getPta() instanceof Andersen) {
@@ -781,7 +829,7 @@ public class PreciseSensitiveApiScanner {
             }
 
             SensitiveApiHit indirectHit = matchIndirectCall(
-                    stmt, info, fileName, functionName, indirectRules, "BODY_HIT", "API_MAP", andersen, hiFile
+                    stmt, info, fileName, functionName, indirectRules, "BODY_HIT", "API_MAP", andersen, hiFile, cg
             );
             if (indirectHit != null) {
                 results.add(indirectHit);
@@ -848,7 +896,7 @@ public class PreciseSensitiveApiScanner {
             // (function, namespace, method) — otherwise it's a redundant duplicate.
             if (isSsaPattern) {
                 SensitiveApiHit indirectChain = matchIndirectCall(
-                        stmt, info, fileName, functionName, indirectRules, "CHAIN_EVIDENCE", "FIELD_MAP", andersen, hiFile
+                        stmt, info, fileName, functionName, indirectRules, "CHAIN_EVIDENCE", "FIELD_MAP", andersen, hiFile, cg
                 );
                 if (indirectChain != null) {
                     String fmKey = functionName + "|" + indirectChain.namespace + "|" + indirectChain.method;
@@ -868,7 +916,7 @@ public class PreciseSensitiveApiScanner {
             }
 
             SensitiveApiHit indirectChain = matchIndirectCall(
-                    stmt, info, fileName, functionName, indirectRules, "CHAIN_EVIDENCE", "FIELD_MAP", andersen, hiFile
+                    stmt, info, fileName, functionName, indirectRules, "CHAIN_EVIDENCE", "FIELD_MAP", andersen, hiFile, cg
             );
             if (indirectChain != null) {
                 results.add(indirectChain);
@@ -948,7 +996,8 @@ public class PreciseSensitiveApiScanner {
             String layer,
             String sourceKind,
             Andersen andersen,
-            HiFile hiFile
+            HiFile hiFile,
+            CallGraph cg
     ) {
         if (!info.valid || info.pathTokens == null || info.pathTokens.isEmpty()) {
             return null;
@@ -963,7 +1012,7 @@ public class PreciseSensitiveApiScanner {
         // Namespace inference for indirect calls: try multiple strategies to determine
         // the namespace of the base variable in an InstanceCallExpr.
         // Priority: Andersen PTA > static type from Local.getType() > resolved name parsing
-        Set<String> namespaceCandidates = inferNamespaceCandidatesFromCallBase(stmt, andersen);
+        Set<String> namespaceCandidates = inferNamespaceCandidatesFromCallBase(stmt, andersen, cg);
 
         // Track whether candidates came from PTA/static type (InstanceCallExpr) or
         // rootQualifier extraction (static calls). This determines which blocking
@@ -1044,30 +1093,33 @@ public class PreciseSensitiveApiScanner {
             // suppressed to prevent false positives like UserViewModel.register being matched
             // as NetConnection.register.
             //
+            // The heuristic is ONLY allowed when there is SOME namespace evidence (either from
+            // PTA/static type, rootQualifier, or variable name). Without any namespace evidence,
+            // matching by method name alone is too aggressive and causes FP.
+            //
             // Blocking strategies (mutually exclusive):
-            // - InstanceCallExpr (hasPtaCandidates): use ONLY ptaClassHasMethod.
-            //   PTA already gives precise type info; adding isNamespaceContradicted on top
-            //   would double-block and drop legitimate chains.
-            // - Static calls (!hasPtaCandidates, rootQualifier-derived): use ONLY
-            //   isNamespaceContradicted. These have no PTA, so rootQualifier extraction
-            //   is the only source of namespace info for FP blocking.
+            // - InstanceCallExpr with PTA candidates: use ONLY ptaClassHasMethod.
+            // - Any candidates present: use isNamespaceContradicted.
+            // - No candidates at all: block the heuristic (don't allow method-only match).
             if (!pathMatch && baseMethod != null && !baseMethod.isEmpty()) {
-                boolean methodOnlyMatch = Objects.equals(baseMethod, info.lastToken)
+                // Strip arguments from lastToken for comparison, since the rule method name
+                // doesn't include argument types but the resolved name might (e.g., "getSupportedCameras(unknown)")
+                String lastTokenStripped = stripMethodArguments(info.lastToken);
+                boolean methodOnlyMatch = Objects.equals(baseMethod, lastTokenStripped)
                         || endsWithDotted(joinedPath, baseMethod);
                 if (methodOnlyMatch && isMethodUniqueToNamespace(baseMethod, indirectRules)) {
+                    // Method is unique to a single namespace (accounting for aliases).
+                    // Block the heuristic if:
+                    // 1. The method is a generic verb (register, stop, etc.) and there's no
+                    //    namespace evidence — these are too common to match without context.
+                    // 2. We have POSITIVE namespace evidence that contradicts the rule's namespace.
                     boolean shouldBlock = false;
-                    if (hasPtaCandidates) {
-                        // InstanceCallExpr: PTA/static type provides candidates.
-                        // Only use ptaClassHasMethod — it's precise and sufficient.
-                        if (andersen != null) {
-                            shouldBlock = ptaClassHasMethod(stmt, andersen, baseMethod);
-                        }
-                    } else if (!namespaceCandidates.isEmpty()) {
-                        // Static call: rootQualifier provides candidates.
-                        // Use namespace contradiction as the blocking mechanism.
+                    if (GENERIC_METHOD_BLACKLIST.contains(baseMethod.toLowerCase(Locale.ROOT))
+                            && !hasPtaCandidates && namespaceCandidates.isEmpty()) {
+                        shouldBlock = true;
+                    } else if (hasPtaCandidates || !namespaceCandidates.isEmpty()) {
                         shouldBlock = isNamespaceContradicted(namespaceCandidates, item.rule.namespace);
                     }
-                    // else: no candidates at all, allow heuristic (preserve recall)
                     if (!shouldBlock) {
                         pathMatch = true;
                     }
@@ -1097,8 +1149,8 @@ public class PreciseSensitiveApiScanner {
         return fallbackHit;
     }
 
-    private Set<String> inferNamespaceCandidatesFromCallBase(Stmt stmt, Andersen andersen) {
-        return NamespaceResolver.inferNamespaceCandidatesFromCallBase(stmt, andersen);
+    private Set<String> inferNamespaceCandidatesFromCallBase(Stmt stmt, Andersen andersen, CallGraph cg) {
+        return NamespaceResolver.inferNamespaceCandidatesFromCallBase(stmt, andersen, cg);
     }
 
     private Set<String> extractNamespaceCandidatesFromClass(com.huawei.hianalyzer.common.base.BaseClass<?, ?> cls) {
@@ -1109,12 +1161,12 @@ public class PreciseSensitiveApiScanner {
         return NamespaceResolver.extractNamespaceCandidatesFromRootQualifier(rootQualifier);
     }
 
-    private Set<String> inferNamespaceFromAssignment(Local base, Stmt usageStmt, Andersen andersen) {
-        return NamespaceResolver.inferNamespaceFromAssignment(base, usageStmt, andersen);
+    private Set<String> inferNamespaceFromAssignment(Local base, Stmt usageStmt, Andersen andersen, CallGraph cg) {
+        return NamespaceResolver.inferNamespaceFromAssignment(base, usageStmt, andersen, cg);
     }
 
-    private List<Stmt> findDefinitionStmts(Local base, Stmt usageStmt, Andersen andersen) {
-        return NamespaceResolver.findDefinitionStmts(base, usageStmt, andersen);
+    private List<Stmt> findDefinitionStmts(Local base, Stmt usageStmt, Andersen andersen, CallGraph cg) {
+        return NamespaceResolver.findDefinitionStmts(base, usageStmt, andersen, cg);
     }
 
     private Set<String> extractNamespaceCandidatesFromReturnType(com.huawei.hianalyzer.common.type.Type returnType) {
@@ -1260,8 +1312,25 @@ public class PreciseSensitiveApiScanner {
         }
 
         // @bundle names may resolve to system APIs if the body contains @ohos: namespace.
+        // Also accept @bundle names where the last pathToken matches a known privacy API
+        // method name — these are calls resolved from the application's own code that
+        // invoke privacy-sensitive APIs (e.g., getSupportedCameras resolved from
+        // @bundle:com.legado...camera.#GLOBAL.getSupportedCameras).
         if ("@bundle".equals(info.sourcePrefix)) {
-            return info.rawBody != null && info.rawBody.contains("@ohos:");
+            if (info.rawBody != null && info.rawBody.contains("@ohos:")) {
+                return true;
+            }
+            // Check if the last pathToken matches a known indirect API method name
+            if (info.lastToken != null) {
+                String lastStripped = stripMethodArguments(info.lastToken).toLowerCase(Locale.ROOT);
+                for (PrivacyApiRuleWithPkg rule : indirectRulesCache) {
+                    String ruleMethod = stripMethodArguments(rule.rule.method).toLowerCase(Locale.ROOT);
+                    if (lastStripped.equals(ruleMethod)) {
+                        return true;
+                    }
+                }
+            }
+            return false;
         }
 
         // Delegate to NamePathMatcher for the standard acceptance logic, but respect
@@ -1586,6 +1655,12 @@ public class PreciseSensitiveApiScanner {
 
     private String safePath(File file) {
         return ScannerUtils.safePath(file);
+    }
+
+    private static String safeMessage(Throwable t) {
+        if (t == null) return "unknown error";
+        String msg = t.getMessage();
+        return (msg == null || msg.isBlank()) ? t.getClass().getSimpleName() : msg;
     }
 
     private String normalizeFullName(String s) {
