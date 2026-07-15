@@ -504,6 +504,13 @@ public class CaiResolver {
         List<SoftAliasEdge> softEdges = new ArrayList<>();
 
         if (andersen != null && sitesWithReceiver.size() > 1) {
+            // Pre-compute points-to class names for all receivers to avoid
+            // redundant PTA queries in the O(n²) pairwise comparison loop
+            Map<Local, Set<String>> receiverPtClasses = new LinkedHashMap<>();
+            for (CallSiteInfo site : sitesWithReceiver) {
+                receiverPtClasses.put(site.receiver, getPointsToClassNames(site.receiver, andersen));
+            }
+
             // O(n²) pairwise comparison — acceptable for typical project sizes
             for (int i = 0; i < sitesWithReceiver.size(); i++) {
                 for (int j = i + 1; j < sitesWithReceiver.size(); j++) {
@@ -514,9 +521,10 @@ public class CaiResolver {
                             // Distinguish must-alias from may-alias:
                             // Must-alias: both variables have identical singleton points-to sets
                             // May-alias: overlapping but not identical points-to sets
-                            Set<String> pt1 = getPointsToClassNames(v1, andersen);
-                            Set<String> pt2 = getPointsToClassNames(v2, andersen);
-                            if (pt1.size() == 1 && pt2.size() == 1 && pt1.equals(pt2)) {
+                            Set<String> pt1 = receiverPtClasses.get(v1);
+                            Set<String> pt2 = receiverPtClasses.get(v2);
+                            if (pt1 != null && pt2 != null
+                                    && pt1.size() == 1 && pt2.size() == 1 && pt1.equals(pt2)) {
                                 // Must-alias: same single concrete type → hard constraint
                                 uf.union(v1, v2);
                             } else {
