@@ -1,35 +1,114 @@
 package com.huawei.hisec;
 
+import java.util.*;
+
 /**
  * Ambiguity model for CAIR's resolution decisions.
  *
- * Replaces the binary GENERIC_METHOD_BLACKLIST with continuous ambiguity assessment.
- * A resolution is marked as ambiguous when the evidence entropy exceeds a threshold,
- * meaning multiple namespaces compete for the same call site with similar evidence strength.
+ * Combines three sources of ambiguity assessment:
+ * 1. Catalog-derived: how many namespaces contain this method in the rule catalog?
+ * 2. Entropy-based: how uniform is the score distribution across candidate namespaces?
+ * 3. Inherently ambiguous: hardcoded list of generic verb methods known to be high-ambiguity.
  *
- * Key differences from GENERIC_METHOD_BLACKLIST:
- * 1. Continuous: entropy provides a real-valued ambiguity score, not just in/out.
- * 2. Evidence-aware: if strong evidence (e.g., PTA uniquely identifies a class)
- *    supports a "generic" method, the ambiguity is low and the match is accepted.
- * 3. Composable: ambiguity scores can be combined across alias components.
+ * The adaptive threshold adjusts based on catalog entropy:
+ *   τ(m) = τ₀ - α * H_catalog(m)
+ * Methods that appear in many namespaces get a lower effective threshold,
+ * making them more likely to be flagged as ambiguous.
  */
 public class AmbiguityModel {
 
-    /** Entropy threshold (in bits) above which a resolution is marked ambiguous. */
+    /** Base entropy threshold (in bits) above which a resolution is marked ambiguous. */
     public static final double AMBIGUITY_THRESHOLD = 1.5;
 
     /** Minimum confidence score required to accept a non-ambiguous resolution. */
     public static final double MIN_CONFIDENCE = 0.4;
 
+    /** Scaling factor for catalog entropy's influence on the adaptive threshold. */
+    public static final double CATALOG_ENTROPY_ALPHA = 0.3;
+
+    // ======================================================
+    // Catalog-derived ambiguity analysis
+    // ======================================================
+
+    /** For each method name (lowercase), how many distinct canonical namespaces contain it. */
+    private static final Map<String, Integer> methodNamespaceCount = new HashMap<>();
+
+    /** For each method name (lowercase), the catalog entropy H_catalog(m). */
+    private static final Map<String, Double> methodCatalogEntropy = new HashMap<>();
+
+    /** Whether catalog analysis has been performed. */
+    private static boolean catalogAnalyzed = false;
+
+    /**
+     * Analyzes the rule catalog to compute per-method namespace counts and catalog entropy.
+     * Must be called once before using isAmbiguous() with catalog-aware logic.
+     *
+     * H_catalog(m) = -Σ p(n|m) * log2(p(n|m))
+     * where p(n|m) is uniform across all namespaces containing method m.
+     *
+     * @param indirectRules Privacy API rules with directCall=false
+     */
+    public static void analyzeCatalog(List<PreciseSensitiveApiScanner.PrivacyApiRuleWithPkg> indirectRules) {
+        methodNamespaceCount.clear();
+        methodCatalogEntropy.clear();
+
+        // Build: method → Set<canonical namespace>
+        Map<String, Set<String>> methodToCanonicalNs = new LinkedHashMap<>();
+        for (var item : indirectRules) {
+            String baseMethod = NamePathMatcher.stripMethodArguments(item.rule.method);
+            if (baseMethod == null || baseMethod.isEmpty()) continue;
+            String ns = item.rule.namespace != null ? item.rule.namespace.toLowerCase(Locale.ROOT) : "";
+            String canonicalNs = NamespaceResolver.getCanonicalNamespace(ns);
+            String key = canonicalNs + "|" + baseMethod.toLowerCase(Locale.ROOT);
+            methodToCanonicalNs.computeIfAbsent(baseMethod.toLowerCase(Locale.ROOT), k -> new LinkedHashSet<>())
+                    .add(key);
+        }
+
+        // Compute namespace counts and catalog entropy for each method
+        for (var entry : methodToCanonicalNs.entrySet()) {
+            String method = entry.getKey();
+            int n = entry.getValue().size();
+            methodNamespaceCount.put(method, n);
+            // Catalog entropy: uniform distribution across n namespaces
+            if (n > 1) {
+                double p = 1.0 / n;
+                double h = -(n * p * (Math.log(p) / Math.log(2)));
+                methodCatalogEntropy.put(method, h);
+            } else {
+                methodCatalogEntropy.put(method, 0.0);
+            }
+        }
+        catalogAnalyzed = true;
+    }
+
+    /**
+     * Gets the number of distinct canonical namespaces containing this method.
+     */
+    public static int getMethodNamespaceCount(String methodName) {
+        if (methodName == null || !catalogAnalyzed) return 0;
+        return methodNamespaceCount.getOrDefault(methodName.toLowerCase(Locale.ROOT), 0);
+    }
+
+    /**
+     * Gets the catalog entropy for this method.
+     */
+    public static double getMethodCatalogEntropy(String methodName) {
+        if (methodName == null || !catalogAnalyzed) return 0.0;
+        return methodCatalogEntropy.getOrDefault(methodName.toLowerCase(Locale.ROOT), 0.0);
+    }
+
+    // ======================================================
+    // Inherently ambiguous method detection (fast-path)
+    // ======================================================
+
     /**
      * Determines if a method name is inherently ambiguous (appears in many namespaces).
-     * These are the same methods as in GENERIC_METHOD_BLACKLIST, but the assessment
-     * is evidence-dependent rather than absolute: if PTA or static type evidence
-     * uniquely identifies the namespace, the ambiguity can be overridden.
+     * These are generic verb methods that, when matched by name alone (no namespace evidence),
+     * produce unreliable results and should be treated with caution.
      */
     public static boolean isInherentlyAmbiguous(String methodName) {
         if (methodName == null) return false;
-        String lower = methodName.toLowerCase(java.util.Locale.ROOT);
+        String lower = methodName.toLowerCase(Locale.ROOT);
         return GENERIC_METHODS.contains(lower);
     }
 
@@ -38,7 +117,7 @@ public class AmbiguityModel {
      * When matched by method name alone (no namespace evidence), these produce
      * unreliable results and should be treated with caution.
      */
-    private static final java.util.Set<String> GENERIC_METHODS = java.util.Set.of(
+    private static final Set<String> GENERIC_METHODS = Set.of(
             "register", "unregister",
             "start", "stop", "restart",
             "on", "off",
@@ -67,9 +146,18 @@ public class AmbiguityModel {
             "release", "cancel", "abort"
     );
 
+    // ======================================================
+    // Ambiguity assessment
+    // ======================================================
+
     /**
      * Computes the effective ambiguity for a resolution, considering both
-     * entropy and inherent method ambiguity.
+     * entropy and inherent method ambiguity, with an adaptive threshold
+     * derived from the rule catalog.
+     *
+     * Adaptive threshold: τ(m) = τ₀ - α * H_catalog(m)
+     * Methods appearing in many namespaces get a lower effective threshold,
+     * making them more likely to be flagged as ambiguous.
      *
      * @param entropy Computed entropy from namespace score distribution
      * @param methodName The matched method name
@@ -77,16 +165,20 @@ public class AmbiguityModel {
      * @return true if the resolution should be treated as ambiguous
      */
     public static boolean isAmbiguous(double entropy, String methodName, boolean hasStrongEvidence) {
+        // Compute adaptive threshold based on catalog entropy
+        double catalogH = catalogAnalyzed ? getMethodCatalogEntropy(methodName) : 0.0;
+        double adaptiveThreshold = AMBIGUITY_THRESHOLD - CATALOG_ENTROPY_ALPHA * catalogH;
+
         // Strong evidence (PTA or static type uniquely identifying a class)
         // can override the inherent ambiguity of generic methods.
-        if (hasStrongEvidence && entropy < AMBIGUITY_THRESHOLD) {
+        if (hasStrongEvidence && entropy < adaptiveThreshold) {
             return false;
         }
         // No strong evidence + generic method → always ambiguous
         if (!hasStrongEvidence && isInherentlyAmbiguous(methodName)) {
             return true;
         }
-        // Otherwise, use entropy threshold
-        return entropy > AMBIGUITY_THRESHOLD;
+        // Otherwise, use adaptive entropy threshold
+        return entropy > adaptiveThreshold;
     }
 }

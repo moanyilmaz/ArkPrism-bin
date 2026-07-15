@@ -846,15 +846,26 @@ public class NamespaceResolver {
             }
         }
 
-        // Check if ANY candidate is compatible (case-insensitive)
+        // Check if ANY candidate is compatible.
+        // Use canonical namespace comparison instead of overly broad prefix matching.
+        // Prefix matching (e.g., "audiomanager".startsWith("audio")) was too permissive
+        // and prevented detection of real contradictions.
+        String ruleCanonical = getCanonicalNamespace(ruleNamespace.toLowerCase(Locale.ROOT));
         for (String candidate : candidates) {
             if (candidate == null || candidate.isEmpty()) continue;
             String candidateLower = candidate.toLowerCase(Locale.ROOT);
-            // Direct match
+            // Direct match in compatible set
             if (compatibleLower.contains(candidateLower)) return false;
-            // Prefix/suffix match (case-insensitive)
-            for (String compat : compatibleLower) {
-                if (compat.startsWith(candidateLower) || candidateLower.startsWith(compat)) return false;
+            // Canonical namespace match: check if the candidate's canonical form
+            // matches any compatible namespace's canonical form
+            String candidateCanonical = getCanonicalNamespace(candidateLower);
+            if (candidateCanonical.equals(ruleCanonical)) return false;
+            // Also check if candidate is an alias of any compatible namespace
+            List<String> candidateAliases = PACKAGE_ALIASES.get(candidateLower);
+            if (candidateAliases != null) {
+                for (String cAlias : candidateAliases) {
+                    if (compatibleLower.contains(cAlias.toLowerCase(Locale.ROOT))) return false;
+                }
             }
         }
         // All candidates contradict
@@ -874,6 +885,9 @@ public class NamespaceResolver {
         if (method == null || indirectRules == null) {
             return false;
         }
+        // Check cache first (populated by precomputeMethodUniqueness)
+        Boolean cached = methodUniqueCache.get(method);
+        if (cached != null) return cached;
         // Use canonical namespace keys that collapse aliases.
         // Namespaces that are aliases of each other (e.g., SystemPasteboard vs pasteboard)
         // represent the same API module and should count as one.
@@ -896,15 +910,45 @@ public class NamespaceResolver {
         return seenCanonicalNamespaces.size() == 1;
     }
 
+    /** Cache for getCanonicalNamespace results. */
+    private static final Map<String, String> canonicalNamespaceCache = new java.util.concurrent.ConcurrentHashMap<>();
+
+    /** Cache for isMethodUniqueToNamespace results. */
+    private static final Map<String, Boolean> methodUniqueCache = new java.util.concurrent.ConcurrentHashMap<>();
+
+    /**
+     * Pre-computes method uniqueness cache from the given indirect rules.
+     * Call this once at the start of analysis to avoid repeated O(n) scans.
+     */
+    public static void precomputeMethodUniqueness(List<PreciseSensitiveApiScanner.PrivacyApiRuleWithPkg> indirectRules) {
+        methodUniqueCache.clear();
+        Map<String, Set<String>> methodToCanonicalNs = new LinkedHashMap<>();
+        for (var item : indirectRules) {
+            String baseMethod = NamePathMatcher.stripMethodArguments(item.rule.method);
+            if (baseMethod == null || baseMethod.isEmpty()) continue;
+            String ns = item.rule.namespace != null ? item.rule.namespace.toLowerCase(Locale.ROOT) : "";
+            String canonicalNs = getCanonicalNamespace(ns);
+            String key = canonicalNs + "|" + baseMethod.toLowerCase(Locale.ROOT);
+            methodToCanonicalNs.computeIfAbsent(baseMethod, k -> new LinkedHashSet<>())
+                    .add(key);
+        }
+        for (var entry : methodToCanonicalNs.entrySet()) {
+            methodUniqueCache.put(entry.getKey(), entry.getValue().size() == 1);
+        }
+    }
+
     /**
      * Returns a canonical namespace key that collapses aliases.
      * If the namespace is an alias of another (via PACKAGE_ALIASES),
      * returns the shortest form among the namespace and its aliases.
      * This ensures that SystemPasteboard and pasteboard both map to the same key.
+     * Results are cached for performance.
      */
     // Package-private: accessible by CaiResolver
     static String getCanonicalNamespace(String nsLower) {
         if (nsLower == null || nsLower.isEmpty()) return nsLower;
+        String cached = canonicalNamespaceCache.get(nsLower);
+        if (cached != null) return cached;
         // Check if this namespace has aliases — use the shortest as canonical
         List<String> candidates = new ArrayList<>();
         candidates.add(nsLower);
@@ -926,7 +970,9 @@ public class NamespaceResolver {
         }
         // Return the shortest candidate as canonical
         candidates.sort((a, b) -> a.length() - b.length());
-        return candidates.get(0);
+        String result = candidates.get(0);
+        canonicalNamespaceCache.put(nsLower, result);
+        return result;
     }
 
     /**

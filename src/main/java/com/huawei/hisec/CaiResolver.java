@@ -35,6 +35,22 @@ public class CaiResolver {
     /** Enable CAIR algorithm. When false, falls back to old heuristic cascade. */
     public static boolean USE_CAIR = true;
 
+    /** Conflict penalty factor. Evidence pointing to an incompatible namespace
+     *  subtracts gamma * weight from the candidate's score.
+     *  Score(c,a) = Σ w_e(support) - γ * Σ w_e(conflict) */
+    public static double CONFLICT_PENALTY_GAMMA = 0.5;
+
+    /** Penalty for a call site whose assigned namespace differs from the
+     *  component's majority namespace. Allows outlier sites with a penalty
+     *  instead of forcing incorrect namespace assignment.
+     *  Objective: max Σ Score(c,a_c) - λ * Σ o_c */
+    public static double CONSISTENCY_PENALTY_LAMBDA = 1.0;
+
+    /** Bonus for soft-alias edges that end up with the same namespace.
+     *  Soft edges (may-alias) are not hard constraints but are rewarded
+     *  when the endpoints agree on namespace. */
+    public static double SOFT_ALIAS_BONUS = 0.3;
+
     // ======================================================
     // Data Structures
     // ======================================================
@@ -83,12 +99,17 @@ public class CaiResolver {
         public final List<NamespaceEvidence> evidence = new ArrayList<>();
         public final String fileName;
         public final String functionName;
+        public final String stmtText;  // Cached for argument-sensitive matching
 
         // Populated during alias component construction
         int aliasComponentId = -1;
 
         // Populated during candidate generation and constraint solving
         List<CandidateApi> allCandidates = new ArrayList<>();
+
+        // Populated after constraint solving — the solver's winner
+        // (separate from allCandidates to keep the full candidate list for entropy computation)
+        CandidateApi assignedCandidate = null;
 
         public CallSiteInfo(Stmt stmt, Local receiver, String methodName,
                            String resolvedFullName,
@@ -101,6 +122,7 @@ public class CaiResolver {
             this.nameInfo = nameInfo;
             this.fileName = fileName;
             this.functionName = functionName;
+            this.stmtText = safe(stmt);
         }
     }
 
@@ -114,6 +136,14 @@ public class CaiResolver {
         public AliasComponent(int componentId) {
             this.componentId = componentId;
         }
+    }
+
+    /** Soft alias edge: two variables that may-alias (points-to overlap)
+     *  but are not must-alias. These are not hard constraints but
+     *  provide a consistency bonus when their namespaces agree. */
+    public static class SoftAliasEdge {
+        public final Local v1, v2;
+        public SoftAliasEdge(Local v1, Local v2) { this.v1 = v1; this.v2 = v2; }
     }
 
     /** A candidate API match for a call site. */
@@ -135,14 +165,23 @@ public class CaiResolver {
     /** Resolution certificate: evidence trace and decision rationale. */
     public static class ResolutionCertificate {
         public List<NamespaceEvidence> contributingEvidence;
+        public List<NamespaceEvidence> conflictingEvidence;  // Evidence arguing against
         public int aliasComponentId;
+        public String componentNamespace;      // The component's chosen namespace
         public String decisionRationale;
+        public List<String> rejectionReasons;  // Why alternatives were rejected
 
         public ResolutionCertificate(List<NamespaceEvidence> contributingEvidence,
-                                     int aliasComponentId, String decisionRationale) {
+                                     List<NamespaceEvidence> conflictingEvidence,
+                                     int aliasComponentId, String componentNamespace,
+                                     String decisionRationale,
+                                     List<String> rejectionReasons) {
             this.contributingEvidence = contributingEvidence;
+            this.conflictingEvidence = conflictingEvidence;
             this.aliasComponentId = aliasComponentId;
+            this.componentNamespace = componentNamespace;
             this.decisionRationale = decisionRationale;
+            this.rejectionReasons = rejectionReasons;
         }
     }
 
@@ -249,12 +288,25 @@ public class CaiResolver {
             var type = site.receiver.getType();
             if (type == null) return;
 
+            // Collect class names already covered by PTA evidence to avoid double-counting.
+            // If PTA_CLASS already produced evidence for the same HiClass, STATIC_TYPE
+            // would duplicate the same namespace observation with a lower weight (0.8 vs 1.0),
+            // inflating the total score for that namespace.
+            Set<String> ptaClassNames = site.evidence.stream()
+                    .filter(e -> e.kind == EvidenceKind.PTA_CLASS)
+                    .map(e -> e.detail.replace("points-to: ", ""))
+                    .collect(Collectors.toSet());
+
             if (type instanceof InstanceType) {
                 try {
                     var classRef = ((InstanceType) type).getClassRef();
                     if (classRef != null) {
                         BaseClass<?, ?> cls = classRef.resolve();
                         if (cls != null) {
+                            // Skip if PTA already covered this class
+                            if (ptaClassNames.contains(cls.getName())) {
+                                return;  // Avoid double-counting with PTA_CLASS evidence
+                            }
                             Set<String> nsCandidates = NamespaceResolver.extractNamespaceCandidatesFromClass(cls);
                             for (String ns : nsCandidates) {
                                 site.evidence.add(new NamespaceEvidence(
@@ -350,7 +402,16 @@ public class CaiResolver {
             var info = site.nameInfo;
             if (info == null || !info.valid) return;
 
+            // Collect namespaces already added by earlier evidence extraction
+            // to avoid double-counting (e.g., ROOT_QUALIFIER and PATH_TOKEN
+            // producing the same namespace from the same underlying observation).
+            Set<String> existingNamespaces = site.evidence.stream()
+                    .map(e -> e.namespace != null ? e.namespace.toLowerCase(Locale.ROOT) : "")
+                    .filter(ns -> !ns.isEmpty())
+                    .collect(Collectors.toSet());
+
             // Evidence 5: ROOT_QUALIFIER — from the resolved name's root qualifier
+            Set<String> rootQualifierNamespaces = new LinkedHashSet<>();
             if (info.rootQualifier != null && !info.rootQualifier.isEmpty()) {
                 String rqLower = info.rootQualifier.toLowerCase(Locale.ROOT);
                 boolean isSdkLibrary = rqLower.contains("@ohos") || rqLower.contains("@kit")
@@ -359,9 +420,14 @@ public class CaiResolver {
                     Set<String> rqCandidates =
                             NamespaceResolver.extractNamespaceCandidatesFromRootQualifier(info.rootQualifier);
                     for (String ns : rqCandidates) {
-                        site.evidence.add(new NamespaceEvidence(
-                                EvidenceKind.ROOT_QUALIFIER, ns,
-                                "root-qualifier: " + info.rootQualifier));
+                        String nsLower = ns.toLowerCase(Locale.ROOT);
+                        if (!existingNamespaces.contains(nsLower)) {
+                            site.evidence.add(new NamespaceEvidence(
+                                    EvidenceKind.ROOT_QUALIFIER, ns,
+                                    "root-qualifier: " + info.rootQualifier));
+                            rootQualifierNamespaces.add(nsLower);
+                            existingNamespaces.add(nsLower);
+                        }
                     }
                 }
             }
@@ -379,9 +445,14 @@ public class CaiResolver {
                         Set<String> rqCandidates =
                                 NamespaceResolver.extractNamespaceCandidatesFromRootQualifier(rqSource);
                         for (String ns : rqCandidates) {
-                            site.evidence.add(new NamespaceEvidence(
-                                    EvidenceKind.ROOT_QUALIFIER, ns,
-                                    "path-qualifier: " + rqSource));
+                            String nsLower = ns.toLowerCase(Locale.ROOT);
+                            if (!existingNamespaces.contains(nsLower)) {
+                                site.evidence.add(new NamespaceEvidence(
+                                        EvidenceKind.ROOT_QUALIFIER, ns,
+                                        "path-qualifier: " + rqSource));
+                                rootQualifierNamespaces.add(nsLower);
+                                existingNamespaces.add(nsLower);
+                            }
                         }
                     }
                 }
@@ -393,9 +464,14 @@ public class CaiResolver {
                 String nsToken = info.pathTokens.get(info.pathTokens.size() - 2);
                 if (nsToken != null && !nsToken.isEmpty()
                         && !nsToken.equals("unknown") && !nsToken.equals("Object")) {
-                    site.evidence.add(new NamespaceEvidence(
-                            EvidenceKind.PATH_TOKEN, nsToken,
-                            "path-token[" + (info.pathTokens.size() - 2) + "]: " + nsToken));
+                    String nsLower = nsToken.toLowerCase(Locale.ROOT);
+                    // Skip if ROOT_QUALIFIER or earlier evidence already covers this namespace
+                    if (!existingNamespaces.contains(nsLower)) {
+                        site.evidence.add(new NamespaceEvidence(
+                                EvidenceKind.PATH_TOKEN, nsToken,
+                                "path-token[" + (info.pathTokens.size() - 2) + "]: " + nsToken));
+                        existingNamespaces.add(nsLower);
+                    }
                 }
             }
         } catch (Throwable ignored) {}
@@ -407,14 +483,17 @@ public class CaiResolver {
 
     /**
      * Builds alias components from call sites using Andersen's comparePointers.
-     * Call sites whose receiver variables alias (point to the same object)
-     * are grouped into the same alias component and must share a namespace.
+     * Distinguishes must-alias (identical singleton points-to sets) from may-alias
+     * (overlapping but not identical points-to sets).
+     *
+     * Must-alias: variables are unioned into the same component (hard constraint).
+     * May-alias: recorded as soft edges for consistency bonus (not a hard constraint).
      *
      * @param callSites All call sites to process
      * @param andersen Andersen PTA instance (may be null)
-     * @return List of alias components
+     * @return AliasComponentResult containing components and soft edges
      */
-    static List<AliasComponent> buildAliasComponents(
+    static AliasComponentResult buildAliasComponents(
             List<CallSiteInfo> callSites, Andersen andersen) {
         // Collect call sites with non-null receiver variables
         List<CallSiteInfo> sitesWithReceiver = callSites.stream()
@@ -422,6 +501,7 @@ public class CaiResolver {
                 .collect(Collectors.toList());
 
         UnionFind uf = new UnionFind();
+        List<SoftAliasEdge> softEdges = new ArrayList<>();
 
         if (andersen != null && sitesWithReceiver.size() > 1) {
             // O(n²) pairwise comparison — acceptable for typical project sizes
@@ -431,7 +511,18 @@ public class CaiResolver {
                     Local v2 = sitesWithReceiver.get(j).receiver;
                     try {
                         if (andersen.comparePointers(v1, v2)) {
-                            uf.union(v1, v2);
+                            // Distinguish must-alias from may-alias:
+                            // Must-alias: both variables have identical singleton points-to sets
+                            // May-alias: overlapping but not identical points-to sets
+                            Set<String> pt1 = getPointsToClassNames(v1, andersen);
+                            Set<String> pt2 = getPointsToClassNames(v2, andersen);
+                            if (pt1.size() == 1 && pt2.size() == 1 && pt1.equals(pt2)) {
+                                // Must-alias: same single concrete type → hard constraint
+                                uf.union(v1, v2);
+                            } else {
+                                // May-alias: overlapping but potentially different types → soft edge
+                                softEdges.add(new SoftAliasEdge(v1, v2));
+                            }
                         }
                     } catch (Throwable ignored) {}
                 }
@@ -466,7 +557,26 @@ public class CaiResolver {
             }
         }
 
-        return components;
+        return new AliasComponentResult(components, softEdges);
+    }
+
+    /** Result of alias component construction: components + soft edges. */
+    public static class AliasComponentResult {
+        public final List<AliasComponent> components;
+        public final List<SoftAliasEdge> softEdges;
+        public AliasComponentResult(List<AliasComponent> components, List<SoftAliasEdge> softEdges) {
+            this.components = components;
+            this.softEdges = softEdges;
+        }
+    }
+
+    /** Gets the class names in a variable's points-to set. */
+    private static Set<String> getPointsToClassNames(Local v, Andersen andersen) {
+        try {
+            Set<HiClass> pts = andersen.getPointsToHiClasses(v);
+            if (pts == null) return Collections.emptySet();
+            return pts.stream().map(cls -> cls.getName()).collect(Collectors.toSet());
+        } catch (Throwable e) { return Collections.emptySet(); }
     }
 
     // ======================================================
@@ -491,6 +601,17 @@ public class CaiResolver {
         for (PreciseSensitiveApiScanner.PrivacyApiRuleWithPkg item : indirectRules) {
             String ruleMethod = NamePathMatcher.stripMethodArguments(item.rule.method);
             if (!baseMethod.equals(ruleMethod)) continue;
+
+            // Argument-sensitive matching: if the rule has parenthesized arguments
+            // (e.g., "on('SensorId.ACCELEROMETER')"), check if the call site's
+            // arguments match the expected pattern. This prevents collapsing
+            // different argument-variant rules into a single candidate.
+            String ruleArg = NamePathMatcher.extractMethodArgument(item.rule.method);
+            if (ruleArg != null && !ruleArg.isEmpty()) {
+                if (!callSiteArgsMatch(site.stmt, site.stmtText, ruleArg)) {
+                    continue;  // Argument doesn't match — skip this specific rule variant
+                }
+            }
 
             // Method name matches. Check if the evidence supports this rule's namespace.
             double score = computeNamespaceScore(site.evidence, item.rule.namespace);
@@ -535,19 +656,24 @@ public class CaiResolver {
     }
 
     /**
-     * Computes the weighted evidence score for a given namespace.
-     * Score = sum of evidence weights where the evidence's namespace
-     * is compatible with (equals or aliases to) the target namespace.
+     * Computes the conflict-aware weighted evidence score for a given namespace.
+     * Score(c,a) = Σ w_e(support) - γ * Σ w_e(conflict)
+     * Supporting evidence: namespace compatible with target.
+     * Conflicting evidence: namespace present but incompatible with target.
      */
     static double computeNamespaceScore(List<NamespaceEvidence> evidence, String targetNamespace) {
-        double score = 0;
+        double supportScore = 0;
+        double conflictScore = 0;
         Set<String> compatible = getCompatibleNamespaces(targetNamespace);
         for (NamespaceEvidence ev : evidence) {
             if (isNamespaceCompatible(ev.namespace, compatible)) {
-                score += ev.weight;
+                supportScore += ev.weight;
+            } else if (ev.namespace != null && !ev.namespace.isEmpty()) {
+                // Evidence points to a different, incompatible namespace
+                conflictScore += ev.weight;
             }
         }
-        return score;
+        return supportScore - CONFLICT_PENALTY_GAMMA * conflictScore;
     }
 
     /** Gets all namespaces compatible with the target (itself + aliases). */
@@ -577,16 +703,22 @@ public class CaiResolver {
         return compatible;
     }
 
-    /** Checks if a candidate namespace is compatible with any of the compatible set. */
+    /** Checks if a candidate namespace is compatible with any of the compatible set.
+     *  Uses canonical namespace comparison instead of overly broad prefix matching. */
     private static boolean isNamespaceCompatible(String candidate, Set<String> compatibleLower) {
         if (candidate == null || candidate.isEmpty()) return false;
         String candidateLower = candidate.toLowerCase(Locale.ROOT);
+        // Direct match
         if (compatibleLower.contains(candidateLower)) return true;
-        // Prefix/suffix match
+        // Canonical namespace comparison: check if they share the same canonical form
+        String candidateCanonical = getCanonicalNamespaceKey(candidateLower);
         for (String compat : compatibleLower) {
-            if (compat.startsWith(candidateLower) || candidateLower.startsWith(compat)) {
-                return true;
-            }
+            if (getCanonicalNamespaceKey(compat).equals(candidateCanonical)) return true;
+        }
+        // Also check PACKAGE_ALIASES for the candidate
+        List<String> candidateAliases = NamespaceResolver.getRulePackagesForImport(candidate);
+        for (String alias : candidateAliases) {
+            if (compatibleLower.contains(alias.toLowerCase(Locale.ROOT))) return true;
         }
         return false;
     }
@@ -600,15 +732,20 @@ public class CaiResolver {
 
     /**
      * Solves namespace constraints per alias component.
-     * Within a component, all call sites must share the same namespace.
-     * The optimal namespace assignment maximizes the total evidence score.
+     * Within a component (must-alias), call sites should share the same namespace.
+     * Outliers are allowed with a consistency penalty (soft consistency).
+     * Soft alias edges (may-alias) provide a bonus when namespaces agree.
+     *
+     * Objective: max Σ Score(c,a_c) - λ * Σ o_c + bonus * soft_agreements
      *
      * For small components (≤10 sites): enumerate all compatible namespace assignments.
      * For large components: majority vote fallback.
      */
     static void solveConstraints(
             List<AliasComponent> components,
-            List<PreciseSensitiveApiScanner.PrivacyApiRuleWithPkg> indirectRules) {
+            List<PreciseSensitiveApiScanner.PrivacyApiRuleWithPkg> indirectRules,
+            List<SoftAliasEdge> softEdges,
+            List<CallSiteInfo> allCallSites) {
         for (AliasComponent comp : components) {
             // Generate candidates for each call site
             List<List<CandidateApi>> siteCandidates = new ArrayList<>();
@@ -639,6 +776,36 @@ public class CaiResolver {
                 solveByEnumeration(comp, siteCandidates, allNamespaces);
             }
         }
+
+        // Apply soft alias edge bonus: if two sites connected by a soft edge
+        // ended up with the same namespace, add a consistency bonus to their scores.
+        // This rewards may-alias consistency without forcing it.
+        if (!softEdges.isEmpty()) {
+            Map<Local, String> receiverToNamespace = new LinkedHashMap<>();
+            for (CallSiteInfo site : allCallSites) {
+                if (site.receiver != null && site.assignedCandidate != null) {
+                    receiverToNamespace.put(site.receiver, site.assignedCandidate.namespace);
+                }
+            }
+            for (SoftAliasEdge edge : softEdges) {
+                String ns1 = receiverToNamespace.get(edge.v1);
+                String ns2 = receiverToNamespace.get(edge.v2);
+                if (ns1 != null && ns2 != null) {
+                    Set<String> compatible = getCompatibleNamespaces(ns1);
+                    if (isNamespaceCompatible(ns2, compatible)) {
+                        // Soft alias edge agrees: add bonus to both sites' scores
+                        // Find the sites and boost their scores
+                        for (CallSiteInfo site : allCallSites) {
+                            if (site.receiver == edge.v1 || site.receiver == edge.v2) {
+                                if (site.assignedCandidate != null) {
+                                    site.assignedCandidate.score += SOFT_ALIAS_BONUS;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     private static void solveSingleton(AliasComponent comp, List<List<CandidateApi>> siteCandidates) {
@@ -646,6 +813,7 @@ public class CaiResolver {
         List<CandidateApi> cands = siteCandidates.get(0);
         if (!cands.isEmpty()) {
             // Best candidate is already first (sorted by score desc)
+            site.assignedCandidate = cands.get(0);
             site.evidence.addAll(extractEvidenceForSite(site));
         }
     }
@@ -689,9 +857,9 @@ public class CaiResolver {
                 if (best == null && !cands.isEmpty()) {
                     best = cands.get(0);
                 }
-                // Store the assignment in the candidate list (keep only the winner)
+                // Write the solver's winner directly to the call site
                 if (best != null) {
-                    siteCandidates.set(i, List.of(best));
+                    comp.callSites.get(i).assignedCandidate = best;
                 }
             }
         }
@@ -725,8 +893,8 @@ public class CaiResolver {
                 }
                 if (!found) {
                     allSitesCovered = false;
-                    // Penalty for sites that don't support this namespace
-                    siteBestScore = -1.0;
+                    // Consistency penalty for sites that don't support this namespace
+                    siteBestScore = -CONSISTENCY_PENALTY_LAMBDA;
                 }
                 totalScore += siteBestScore;
             }
@@ -753,8 +921,9 @@ public class CaiResolver {
                 if (best == null && !cands.isEmpty()) {
                     best = cands.get(0);
                 }
+                // Write the solver's winner directly to the call site
                 if (best != null) {
-                    siteCandidates.set(i, List.of(best));
+                    comp.callSites.get(i).assignedCandidate = best;
                 }
             }
         }
@@ -891,34 +1060,54 @@ public class CaiResolver {
 
     /**
      * Generates resolution certificates for each result.
-     * Each certificate contains the contributing evidence, alias component ID,
-     * and a human-readable decision rationale.
+     * Each certificate contains contributing evidence, conflicting evidence,
+     * alias component ID, and a human-readable decision rationale.
      */
     static void generateCertificates(List<ResolutionResult> results) {
         for (ResolutionResult result : results) {
             CallSiteInfo site = result.callSite;
             List<NamespaceEvidence> contributing = new ArrayList<>();
+            List<NamespaceEvidence> conflicting = new ArrayList<>();
+            List<String> rejectionReasons = new ArrayList<>();
+            String componentNs = null;
 
             if (result.bestCandidate != null) {
-                // Collect evidence that supports the chosen namespace
+                // Collect evidence that supports vs conflicts with the chosen namespace
                 Set<String> compatible = getCompatibleNamespaces(result.bestCandidate.namespace);
                 for (NamespaceEvidence ev : site.evidence) {
                     if (isNamespaceCompatible(ev.namespace, compatible)) {
                         contributing.add(ev);
+                    } else if (ev.namespace != null && !ev.namespace.isEmpty()) {
+                        conflicting.add(ev);
+                    }
+                }
+                componentNs = result.bestCandidate.namespace;
+
+                // Build rejection reasons for top alternatives
+                if (result.allCandidates.size() > 1) {
+                    for (int i = 1; i < result.allCandidates.size() && i <= 3; i++) {
+                        CandidateApi alt = result.allCandidates.get(i);
+                        rejectionReasons.add(String.format("Rejected %s.%s (score=%.2f vs winner %.2f)",
+                                alt.namespace, alt.methodName, alt.score,
+                                result.bestCandidate.score));
                     }
                 }
             }
 
-            // Sort contributing evidence by weight descending
+            // Sort evidence by weight descending
             contributing.sort((a, b) -> Double.compare(b.weight, a.weight));
+            conflicting.sort((a, b) -> Double.compare(b.weight, a.weight));
 
-            String rationale = buildRationale(result, contributing);
+            String rationale = buildRationale(result, contributing, conflicting);
             result.certificate = new ResolutionCertificate(
-                    contributing, site.aliasComponentId, rationale);
+                    contributing, conflicting, site.aliasComponentId,
+                    componentNs, rationale, rejectionReasons);
         }
     }
 
-    private static String buildRationale(ResolutionResult result, List<NamespaceEvidence> contributing) {
+    private static String buildRationale(ResolutionResult result,
+                                          List<NamespaceEvidence> contributing,
+                                          List<NamespaceEvidence> conflicting) {
         StringBuilder sb = new StringBuilder();
         if (result.bestCandidate != null) {
             sb.append("Resolved to ").append(result.bestCandidate.namespace)
@@ -930,6 +1119,15 @@ public class CaiResolver {
                     NamespaceEvidence ev = contributing.get(i);
                     sb.append(ev.kind).append("(").append(String.format("%.1f", ev.weight)).append(")");
                 }
+            }
+            if (!conflicting.isEmpty()) {
+                sb.append(" [conflict:");
+                for (int i = 0; i < Math.min(conflicting.size(), 2); i++) {
+                    if (i > 0) sb.append(",");
+                    NamespaceEvidence ev = conflicting.get(i);
+                    sb.append(" ").append(ev.kind).append("→").append(ev.namespace);
+                }
+                sb.append("]");
             }
             if (result.isAmbiguous) {
                 sb.append(" [AMBIGUOUS: entropy=").append(String.format("%.2f", result.entropy)).append("]");
@@ -963,6 +1161,11 @@ public class CaiResolver {
             Andersen andersen,
             CallGraph cg,
             HiFile hiFile) {
+
+        // Step 0: Analyze rule catalog for catalog-derived ambiguity assessment
+        // and pre-compute method uniqueness cache
+        AmbiguityModel.analyzeCatalog(indirectRules);
+        NamespaceResolver.precomputeMethodUniqueness(indirectRules);
 
         // Step 1: Build CallSiteInfo objects
         List<CallSiteInfo> callSites = new ArrayList<>();
@@ -999,21 +1202,25 @@ public class CaiResolver {
             extractEvidence(site, andersen, cg);
         }
 
-        // Step 3: Build alias components
-        List<AliasComponent> components = buildAliasComponents(callSites, andersen);
+        // Step 3: Build alias components (distinguishing must-alias vs may-alias)
+        AliasComponentResult acResult = buildAliasComponents(callSites, andersen);
+        List<AliasComponent> components = acResult.components;
+        List<SoftAliasEdge> softEdges = acResult.softEdges;
 
         // Step 4: Generate candidates and solve constraints
-        solveConstraints(components, indirectRules);
+        solveConstraints(components, indirectRules, softEdges, callSites);
 
         // Step 5: Build resolution results
         Map<Stmt, ResolutionResult> resultMap = new LinkedHashMap<>();
         List<ResolutionResult> allResults = new ArrayList<>();
         for (CallSiteInfo site : callSites) {
             ResolutionResult result = new ResolutionResult(site);
-            // Get the resolved candidate from site.allCandidates
-            // After constraint solving, each site's candidates list should have
-            // been filtered to the winning namespace's candidates
-            if (!site.allCandidates.isEmpty()) {
+            // Use the constraint solver's winner (assignedCandidate) if available,
+            // otherwise fall back to the first candidate from allCandidates.
+            // allCandidates is kept unchanged for entropy/ambiguity computation.
+            if (site.assignedCandidate != null) {
+                result.bestCandidate = site.assignedCandidate;
+            } else if (!site.allCandidates.isEmpty()) {
                 result.bestCandidate = site.allCandidates.get(0);
             }
             result.allCandidates = new ArrayList<>(site.allCandidates);
@@ -1067,6 +1274,58 @@ public class CaiResolver {
     // ======================================================
     // Utility methods
     // ======================================================
+
+    /**
+     * Checks if the call site's arguments match the expected argument pattern.
+     * Mirrors PreciseSensitiveApiScanner.callStmtArgsMatchArgumentPattern()
+     * but as a static method accessible from CaiResolver.
+     */
+    static boolean callSiteArgsMatch(Stmt stmt, String stmtText, String expectedArg) {
+        if (expectedArg == null || expectedArg.isEmpty()) return true;
+
+        // Primary: extract StringConstant arguments from the CallStmt IR
+        if (stmt instanceof CallStmt) {
+            try {
+                var callExpr = ((CallStmt) stmt).getCallExpr();
+                if (callExpr != null) {
+                    var argList = callExpr.getArgList();
+                    if (argList != null) {
+                        for (Object arg : argList) {
+                            if (arg instanceof com.huawei.hianalyzer.ir.value.constant.StringConstant) {
+                                String argValue = ((com.huawei.hianalyzer.ir.value.constant.StringConstant) arg).getValue();
+                                if (argValue != null && argumentMatchesPattern(argValue, expectedArg)) {
+                                    return true;
+                                }
+                            }
+                        }
+                    }
+                }
+            } catch (Throwable ignored) {}
+        }
+
+        // Fallback: check stmtText for the expected argument pattern
+        String argTail = expectedArg.contains(".")
+                ? expectedArg.substring(expectedArg.lastIndexOf('.') + 1) : expectedArg;
+        if (stmtText == null) return false;
+        if (stmtText.contains(expectedArg)) return true;
+        if (argTail.length() >= 3 && stmtText.contains(argTail)) return true;
+        return false;
+    }
+
+    /**
+     * Checks whether an actual argument value matches the expected argument pattern.
+     * Supports exact match and suffix match for enum-qualified patterns.
+     */
+    private static boolean argumentMatchesPattern(String actualArg, String expectedArg) {
+        if (actualArg == null || expectedArg == null) return false;
+        if (actualArg.equals(expectedArg)) return true;
+        String expectedTail = expectedArg.contains(".")
+                ? expectedArg.substring(expectedArg.lastIndexOf('.') + 1) : expectedArg;
+        if (actualArg.equals(expectedTail)) return true;
+        if (actualArg.equalsIgnoreCase(expectedTail)) return true;
+        if (actualArg.contains(expectedArg)) return true;
+        return false;
+    }
 
     private static String safe(Stmt stmt) {
         if (stmt == null) return "";
