@@ -508,7 +508,11 @@ public class CaiResolver {
             // Accept candidate if:
             // 1. Path-based match succeeds (high confidence), OR
             // 2. Evidence score > 0 (some namespace evidence supports this rule), OR
-            // 3. Method is unique to a single canonical namespace (heuristic fallback)
+            // 3. Method is unique to a single canonical namespace
+            //    (generic verbs like request/stop/register are also accepted here,
+            //     but will be flagged by the ambiguity assessment in Phase 5 —
+            //     the same approach as the old matchIndirectCall heuristic which
+            //     only blocks when there is NO namespace evidence at all)
             boolean methodUnique = NamespaceResolver.isMethodUniqueToNamespace(baseMethod, indirectRules);
             if (pathMatch || score > 0 || methodUnique) {
                 CandidateApi cand = new CandidateApi(
@@ -778,6 +782,23 @@ public class CaiResolver {
                 continue;
             }
 
+            // Pre-compute evidence flags (needed for both single and multi-namespace cases)
+            boolean hasStrongEvidence = result.callSite.evidence.stream()
+                    .anyMatch(ev -> ev.kind == EvidenceKind.PTA_CLASS || ev.kind == EvidenceKind.STATIC_TYPE);
+            boolean hasAnyEvidence = !result.callSite.evidence.isEmpty();
+            String strippedMethod = NamePathMatcher.stripMethodArguments(result.callSite.methodName);
+
+            // Check if any evidence actually supports the best candidate's namespace.
+            // This is more precise than hasAnyEvidence: evidence may exist but be unrelated
+            // to the chosen namespace (e.g., evidence points to "CalendarManager" but
+            // the methodUnique fallback chose "HttpRequest.request").
+            boolean hasSupportingEvidence = false;
+            if (result.bestCandidate != null) {
+                Set<String> compatible = getCompatibleNamespaces(result.bestCandidate.namespace);
+                hasSupportingEvidence = result.callSite.evidence.stream()
+                        .anyMatch(ev -> isNamespaceCompatible(ev.namespace, compatible));
+            }
+
             // Group candidates by canonical namespace
             Map<String, Double> nsScores = new LinkedHashMap<>();
             for (CandidateApi cand : cands) {
@@ -786,9 +807,21 @@ public class CaiResolver {
             }
 
             if (nsScores.size() <= 1) {
-                // Unique namespace — no ambiguity
+                // Unique namespace candidate. Normally no ambiguity,
+                // but for inherently ambiguous method names (request, stop, register, etc.)
+                // with no namespace evidence, this is still unreliable — block it.
                 result.entropy = 0.0;
                 result.isAmbiguous = false;
+
+                // Check: inherently ambiguous method + no SUPPORTING evidence + low score = block
+                boolean isGeneric = AmbiguityModel.isInherentlyAmbiguous(strippedMethod);
+                if (isGeneric && !hasSupportingEvidence && result.bestCandidate != null
+                        && result.bestCandidate.score <= 0.1) {
+                    result.isAmbiguous = true;
+                    result.entropy = 2.0;
+                    Logger.log("  [CAIR] Ambiguous (no supporting evidence, generic method): "
+                            + strippedMethod + " -> " + result.bestCandidate.namespace);
+                }
                 continue;
             }
 
@@ -809,13 +842,21 @@ public class CaiResolver {
             }
             result.entropy = entropy;
 
-            // Check if strong evidence (PTA_CLASS or STATIC_TYPE) is present
-            boolean hasStrongEvidence = result.callSite.evidence.stream()
-                    .anyMatch(ev -> ev.kind == EvidenceKind.PTA_CLASS || ev.kind == EvidenceKind.STATIC_TYPE);
-
             // Use AmbiguityModel which considers both entropy and inherent method ambiguity
             result.isAmbiguous = AmbiguityModel.isAmbiguous(
-                    entropy, result.callSite.methodName, hasStrongEvidence);
+                    entropy, strippedMethod, hasStrongEvidence);
+
+            // Additional block: for inherently ambiguous methods (request, stop, register, etc.)
+            // with NO namespace evidence at all, always mark as ambiguous.
+            // This matches the old matchIndirectCall's GENERIC_METHOD_BLACKLIST logic:
+            //   if (GENERIC_METHOD_BLACKLIST.contains(method) && !hasPtaCandidates && namespaceCandidates.isEmpty())
+            if (!result.isAmbiguous && AmbiguityModel.isInherentlyAmbiguous(strippedMethod)
+                    && !hasSupportingEvidence && result.bestCandidate != null && result.bestCandidate.score <= 0.1) {
+                result.isAmbiguous = true;
+                result.entropy = Math.max(result.entropy, 2.0);
+                Logger.log("  [CAIR] Ambiguous (no supporting evidence, generic method, multi-ns): "
+                        + strippedMethod + " -> " + result.bestCandidate.namespace);
+            }
 
             // Also check namespace contradiction: if all evidence contradicts the best candidate,
             // mark as ambiguous. This mirrors the old isNamespaceContradicted logic.

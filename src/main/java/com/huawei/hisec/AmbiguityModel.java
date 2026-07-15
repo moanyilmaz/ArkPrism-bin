@@ -56,7 +56,15 @@ public class AmbiguityModel {
             "bind", "unbind",
             "subscribe", "unsubscribe",
             "show", "hide",
-            "play", "pause", "resume"
+            "play", "pause", "resume",
+            // Extended: common verbs that appear unique in rules but are actually generic
+            "request", "response",
+            "execute", "run", "call", "invoke",
+            "update", "refresh", "reset",
+            "check", "verify", "validate",
+            "process", "handle", "callback",
+            "notify", "trigger", "dispatch",
+            "release", "cancel", "abort"
     );
 
     /**
