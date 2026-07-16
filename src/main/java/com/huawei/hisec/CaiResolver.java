@@ -155,6 +155,7 @@ public class CaiResolver {
         public final String methodName;
         public final PreciseSensitiveApiScanner.PrivacyApiRuleWithPkg rule;
         public double score;
+        public double supportScore;  // Score without conflict penalty (for MIN_CONFIDENCE check)
 
         public CandidateApi(String namespace, String methodName,
                             PreciseSensitiveApiScanner.PrivacyApiRuleWithPkg rule, double score) {
@@ -162,6 +163,7 @@ public class CaiResolver {
             this.methodName = methodName;
             this.rule = rule;
             this.score = score;
+            this.supportScore = score;
         }
     }
 
@@ -633,6 +635,10 @@ public class CaiResolver {
             // Method name matches. Check if the evidence supports this rule's namespace.
             double score = computeNamespaceScore(site.evidence, item.rule.namespace);
 
+            // Compute raw support score (without conflict penalty) for MIN_CONFIDENCE check.
+            // This is the sum of supporting evidence weights, before subtracting γ * conflictScore.
+            double rawSupportScore = computeSupportScore(site.evidence, item.rule.namespace);
+
             // Also check path-based matching
             boolean pathMatch = false;
             if (site.nameInfo != null && site.nameInfo.valid) {
@@ -655,13 +661,17 @@ public class CaiResolver {
             if (pathMatch || score > 0 || methodUnique) {
                 CandidateApi cand = new CandidateApi(
                         item.rule.namespace, ruleMethod, item, score);
+                // Save raw support score (evidence sum only, no conflict penalty) for MIN_CONFIDENCE check
+                cand.supportScore = rawSupportScore;
                 // Boost score for path matches
                 if (pathMatch) {
                     cand.score += 1.0;
+                    cand.supportScore += 1.0;
                 }
                 // Small baseline score for unique-method heuristic
                 if (methodUnique && score == 0 && !pathMatch) {
                     cand.score = 0.1;
+                    cand.supportScore = 0.1;
                 }
                 candidates.add(cand);
             }
@@ -694,6 +704,22 @@ public class CaiResolver {
             }
         }
         return supportScore - CONFLICT_PENALTY_GAMMA * conflictScore;
+    }
+
+    /**
+     * Computes the raw support score (sum of supporting evidence weights only)
+     * without conflict penalty. Used for MIN_CONFIDENCE check to avoid
+     * conflating "high conflict" with "low evidence".
+     */
+    static double computeSupportScore(List<NamespaceEvidence> evidence, String targetNamespace) {
+        double supportScore = 0;
+        Set<String> compatible = getCompatibleNamespaces(targetNamespace);
+        for (NamespaceEvidence ev : evidence) {
+            if (isNamespaceCompatible(ev.namespace, compatible)) {
+                supportScore += ev.weight;
+            }
+        }
+        return supportScore;
     }
 
     /** Gets all namespaces compatible with the target (itself + aliases). */
@@ -994,12 +1020,14 @@ public class CaiResolver {
                 result.isAmbiguous = false;
 
                 // Absolute score threshold: even single-namespace candidates must have
-                // sufficient confidence. A score of 0.1 with only one namespace is unreliable.
+                // sufficient supporting evidence (supportScore, which excludes conflict penalty).
+                // Using final score would be wrong — conflict penalties can push scores negative
+                // even for genuine privacy APIs with strong supporting evidence.
                 if (result.bestCandidate != null
-                        && result.bestCandidate.score < AmbiguityModel.MIN_CONFIDENCE) {
+                        && result.bestCandidate.supportScore < AmbiguityModel.MIN_CONFIDENCE) {
                     result.isAmbiguous = true;
                     result.entropy = 2.0;
-                    Logger.log("  [CAIR] Ambiguous (low score=" + String.format("%.2f", result.bestCandidate.score)
+                    Logger.log("  [CAIR] Ambiguous (low supportScore=" + String.format("%.2f", result.bestCandidate.supportScore)
                             + " < MIN_CONFIDENCE=" + AmbiguityModel.MIN_CONFIDENCE
                             + ", single namespace): "
                             + strippedMethod + " -> " + result.bestCandidate.namespace);
@@ -1042,13 +1070,14 @@ public class CaiResolver {
             result.isAmbiguous = AmbiguityModel.isAmbiguous(
                     entropy, strippedMethod, hasStrongEvidence);
 
-            // Absolute score threshold: if the best candidate has very low score,
-            // the resolution is unreliable regardless of entropy
+            // Absolute score threshold: if the best candidate has very low supporting evidence,
+            // the resolution is unreliable regardless of entropy. Check supportScore (excludes
+            // conflict penalty) — conflict can push final score negative even for genuine APIs.
             if (!result.isAmbiguous && result.bestCandidate != null
-                    && result.bestCandidate.score < AmbiguityModel.MIN_CONFIDENCE) {
+                    && result.bestCandidate.supportScore < AmbiguityModel.MIN_CONFIDENCE) {
                 result.isAmbiguous = true;
                 result.entropy = Math.max(result.entropy, 2.0);
-                Logger.log("  [CAIR] Ambiguous (low score=" + String.format("%.2f", result.bestCandidate.score)
+                Logger.log("  [CAIR] Ambiguous (low supportScore=" + String.format("%.2f", result.bestCandidate.supportScore)
                         + " < MIN_CONFIDENCE=" + AmbiguityModel.MIN_CONFIDENCE + "): "
                         + strippedMethod + " -> " + result.bestCandidate.namespace);
             }
