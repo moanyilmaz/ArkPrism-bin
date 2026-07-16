@@ -106,6 +106,8 @@ public class CaiResolver {
         // Populated after constraint solving — the solver's winner
         // (separate from allCandidates to keep the full candidate list for entropy computation)
         CandidateApi assignedCandidate = null;
+        boolean isOutlier = false;  // True if this site's assignment diverges from component namespace
+        String componentNamespace = null;  // The component's chosen namespace
 
         public CallSiteInfo(Stmt stmt, Local receiver, String methodName,
                            String resolvedFullName,
@@ -129,6 +131,7 @@ public class CaiResolver {
         public final Set<Local> receiverVars = new LinkedHashSet<>();
         public final List<CallSiteInfo> callSites = new ArrayList<>();
         public Set<String> candidateNamespaces = new LinkedHashSet<>();
+        public String selectedNamespace;  // Namespace chosen by joint solver
 
         public AliasComponent(int componentId) {
             this.componentId = componentId;
@@ -879,28 +882,48 @@ public class CaiResolver {
             }
         }
 
-        // Reassign candidates based on the winning namespace
+        // Reassign candidates based on the winning namespace.
+        // Each site must execute the same outlier comparison used in the objective:
+        //   f_i(z) = max(bestSameNs, bestOtherNs - λ)
+        // If outlierUtility > sameUtility, the site is an outlier and keeps its
+        // own best candidate from a different namespace.
         if (bestNs != null) {
             Set<String> compatibleBest = getCompatibleNamespaces(bestNs);
+            comp.selectedNamespace = bestNs;
+            for (CallSiteInfo site : comp.callSites) {
+                site.componentNamespace = bestNs;
+            }
             for (int i = 0; i < comp.callSites.size(); i++) {
                 List<CandidateApi> cands = siteCandidates.get(i);
 
-                // For the winning namespace, assign the best matching candidate
-                CandidateApi best = null;
-                CandidateApi bestFallback = null;
+                CandidateApi bestSame = null;
+                CandidateApi bestOther = null;
 
                 for (CandidateApi cand : cands) {
-                    if (best == null && isNamespaceCompatible(cand.namespace, compatibleBest)) {
-                        best = cand;  // Already sorted by score desc
-                    }
-                    if (bestFallback == null) {
-                        bestFallback = cand;  // Overall best (outlier choice)
+                    if (isNamespaceCompatible(cand.namespace, compatibleBest)) {
+                        if (bestSame == null) bestSame = cand;
+                    } else {
+                        if (bestOther == null) bestOther = cand;
                     }
                 }
 
-                // If no candidate matches the winning namespace, the site is an outlier:
-                // keep its own best candidate (the outlier choice with λ penalty)
-                comp.callSites.get(i).assignedCandidate = (best != null) ? best : bestFallback;
+                // Execute the outlier comparison from the objective function
+                double sameUtility = (bestSame != null) ? bestSame.score : Double.NEGATIVE_INFINITY;
+                double outlierUtility = (bestOther != null) ? bestOther.score - CONSISTENCY_PENALTY_LAMBDA : Double.NEGATIVE_INFINITY;
+
+                if (outlierUtility > sameUtility && bestOther != null) {
+                    // Outlier: site's best other-ns candidate is better than same-ns after penalty
+                    comp.callSites.get(i).assignedCandidate = bestOther;
+                    comp.callSites.get(i).isOutlier = true;
+                } else if (bestSame != null) {
+                    // Non-outlier: component namespace candidate is best
+                    comp.callSites.get(i).assignedCandidate = bestSame;
+                    comp.callSites.get(i).isOutlier = false;
+                } else if (bestOther != null) {
+                    // No same-ns candidate at all — must use other-ns
+                    comp.callSites.get(i).assignedCandidate = bestOther;
+                    comp.callSites.get(i).isOutlier = true;
+                }
             }
         }
     }
@@ -929,14 +952,20 @@ public class CaiResolver {
 
             // Pre-compute evidence flags (needed for both single and multi-namespace cases)
             // Strong evidence requires ALL PTA/STATIC_TYPE evidence to point to the same
-            // canonical namespace — scattered evidence is not "strong" for overriding ambiguity.
+            // canonical namespace AND that namespace must support the bestCandidate.
             Set<String> strongNamespaces = result.callSite.evidence.stream()
                     .filter(ev -> ev.kind == EvidenceKind.PTA_CLASS || ev.kind == EvidenceKind.STATIC_TYPE)
                     .map(ev -> NamespaceResolver.getCanonicalNamespace(
                             ev.namespace != null ? ev.namespace.toLowerCase(Locale.ROOT) : ""))
                     .filter(ns -> ns != null && !ns.isEmpty())
                     .collect(Collectors.toSet());
-            boolean hasStrongEvidence = strongNamespaces.size() == 1;
+            boolean hasStrongEvidence = false;
+            if (strongNamespaces.size() == 1 && result.bestCandidate != null) {
+                // The unique strong namespace must support the best candidate
+                String strongNs = strongNamespaces.iterator().next();
+                Set<String> candidateCompatible = getCompatibleNamespaces(result.bestCandidate.namespace);
+                hasStrongEvidence = isNamespaceCompatible(strongNs, candidateCompatible);
+            }
             boolean hasAnyEvidence = !result.callSite.evidence.isEmpty();
             String strippedMethod = NamePathMatcher.stripMethodArguments(result.callSite.methodName);
 
@@ -960,10 +989,22 @@ public class CaiResolver {
 
             if (nsScores.size() <= 1) {
                 // Unique namespace candidate. Normally no ambiguity,
-                // but for inherently ambiguous method names (request, stop, register, etc.)
-                // with no namespace evidence, this is still unreliable — block it.
+                // but must still pass absolute score threshold.
                 result.entropy = 0.0;
                 result.isAmbiguous = false;
+
+                // Absolute score threshold: even single-namespace candidates must have
+                // sufficient confidence. A score of 0.1 with only one namespace is unreliable.
+                if (result.bestCandidate != null
+                        && result.bestCandidate.score < AmbiguityModel.MIN_CONFIDENCE) {
+                    result.isAmbiguous = true;
+                    result.entropy = 2.0;
+                    Logger.log("  [CAIR] Ambiguous (low score=" + String.format("%.2f", result.bestCandidate.score)
+                            + " < MIN_CONFIDENCE=" + AmbiguityModel.MIN_CONFIDENCE
+                            + ", single namespace): "
+                            + strippedMethod + " -> " + result.bestCandidate.namespace);
+                    continue;
+                }
 
                 // Check: inherently ambiguous method + no SUPPORTING evidence + low score = block
                 boolean isGeneric = AmbiguityModel.isInherentlyAmbiguous(strippedMethod);
@@ -1092,15 +1133,20 @@ public class CaiResolver {
                         conflicting.add(ev);
                     }
                 }
-                componentNs = result.bestCandidate.namespace;
+                // For outlier sites, componentNs is the component's namespace (not the
+                // assigned candidate's namespace); for non-outliers they are the same.
+                componentNs = site.isOutlier ? findComponentNamespace(site) : result.bestCandidate.namespace;
 
                 // Build rejection reasons for top alternatives
                 if (result.allCandidates.size() > 1) {
-                    for (int i = 1; i < result.allCandidates.size() && i <= 3; i++) {
-                        CandidateApi alt = result.allCandidates.get(i);
-                        rejectionReasons.add(String.format("Rejected %s.%s (score=%.2f vs winner %.2f)",
-                                alt.namespace, alt.methodName, alt.score,
-                                result.bestCandidate.score));
+                    // The winner may not be allCandidates[0] after joint solving
+                    CandidateApi winner = result.bestCandidate;
+                    for (CandidateApi alt : result.allCandidates) {
+                        if (alt != winner && rejectionReasons.size() < 3) {
+                            rejectionReasons.add(String.format("Rejected %s.%s (score=%.2f vs winner %.2f)",
+                                    alt.namespace, alt.methodName, alt.score,
+                                    winner.score));
+                        }
                     }
                 }
             }
@@ -1114,6 +1160,13 @@ public class CaiResolver {
                     contributing, conflicting, site.aliasComponentId,
                     componentNs, rationale, rejectionReasons);
         }
+    }
+
+    /** Find the component's selected namespace for a given call site. */
+    private static String findComponentNamespace(CallSiteInfo site) {
+        // Walk through the site's component to find the selected namespace
+        // This is set during solveByEnumeration
+        return site.componentNamespace;
     }
 
     private static String buildRationale(ResolutionResult result,
