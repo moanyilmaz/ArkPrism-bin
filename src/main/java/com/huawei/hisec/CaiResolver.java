@@ -43,13 +43,9 @@ public class CaiResolver {
     /** Penalty for a call site whose assigned namespace differs from the
      *  component's majority namespace. Allows outlier sites with a penalty
      *  instead of forcing incorrect namespace assignment.
-     *  Objective: max Σ Score(c,a_c) - λ * Σ o_c */
+     *  Objective: max Σ Score(c,a_c) - λ * Σ o_c
+     *  Soft-alias edges are logged for diagnostics but do not affect the objective. */
     public static double CONSISTENCY_PENALTY_LAMBDA = 1.0;
-
-    /** Bonus for soft-alias edges that end up with the same namespace.
-     *  Soft edges (may-alias) are not hard constraints but are rewarded
-     *  when the endpoints agree on namespace. */
-    public static double SOFT_ALIAS_BONUS = 0.3;
 
     // ======================================================
     // Data Structures
@@ -126,7 +122,8 @@ public class CaiResolver {
         }
     }
 
-    /** Alias component: set of receiver variables that must share the same namespace. */
+    /** Type-consistent component: set of receiver variables with identical singleton
+     *  class types, strongly suggesting they share the same namespace. */
     public static class AliasComponent {
         public final int componentId;
         public final Set<Local> receiverVars = new LinkedHashSet<>();
@@ -138,9 +135,12 @@ public class CaiResolver {
         }
     }
 
-    /** Soft alias edge: two variables that may-alias (points-to overlap)
-     *  but are not must-alias. These are not hard constraints but
-     *  provide a consistency bonus when their namespaces agree. */
+    /** Soft alias edge: two variables with overlapping points-to sets
+     *  but different singleton types (type-overlapping). These are not hard constraints
+     *  but are logged for diagnostic analysis when their namespaces agree.
+     *  Note: True must-alias (proving two receivers are the same object) requires
+     *  allocation-site-level points-to sets, which HiAnalyzer's Andersen PTA does not
+     *  expose. We use "type-consistent" as the strongest alias claim we can make. */
     public static class SoftAliasEdge {
         public final Local v1, v2;
         public SoftAliasEdge(Local v1, Local v2) { this.v1 = v1; this.v2 = v2; }
@@ -483,11 +483,16 @@ public class CaiResolver {
 
     /**
      * Builds alias components from call sites using Andersen's comparePointers.
-     * Distinguishes must-alias (identical singleton points-to sets) from may-alias
-     * (overlapping but not identical points-to sets).
+     * Distinguishes receiver-type-consistent (identical singleton points-to CLASS sets)
+     * from type-overlapping (aliasing but potentially different concrete types).
      *
-     * Must-alias: variables are unioned into the same component (hard constraint).
-     * May-alias: recorded as soft edges for consistency bonus (not a hard constraint).
+     * Type-consistent: variables are unioned into the same component (they provably
+     *   share the same runtime class type, though not necessarily the same object).
+     * Type-overlapping: recorded as soft edges for diagnostic analysis (not a hard constraint).
+     *
+     * Note: True must-alias (proving two receivers are the same object) requires
+     * allocation-site-level points-to sets, which HiAnalyzer's Andersen PTA does not
+     * expose. We use "type-consistent" as the strongest alias claim we can make.
      *
      * @param callSites All call sites to process
      * @param andersen Andersen PTA instance (may be null)
@@ -518,17 +523,18 @@ public class CaiResolver {
                     Local v2 = sitesWithReceiver.get(j).receiver;
                     try {
                         if (andersen.comparePointers(v1, v2)) {
-                            // Distinguish must-alias from may-alias:
-                            // Must-alias: both variables have identical singleton points-to sets
-                            // May-alias: overlapping but not identical points-to sets
+                            // Distinguish type-consistent from type-overlapping:
+                            // Type-consistent: both receivers have identical singleton points-to CLASS sets
+                            //   (same runtime type, but not necessarily same object)
+                            // Type-overlapping: aliasing with potentially different concrete types
                             Set<String> pt1 = receiverPtClasses.get(v1);
                             Set<String> pt2 = receiverPtClasses.get(v2);
                             if (pt1 != null && pt2 != null
                                     && pt1.size() == 1 && pt2.size() == 1 && pt1.equals(pt2)) {
-                                // Must-alias: same single concrete type → hard constraint
+                                // Type-consistent: same single concrete type → merge into component
                                 uf.union(v1, v2);
                             } else {
-                                // May-alias: overlapping but potentially different types → soft edge
+                                // Type-overlapping: aliasing with potentially different types → soft edge (diagnostic)
                                 softEdges.add(new SoftAliasEdge(v1, v2));
                             }
                         }
@@ -677,8 +683,11 @@ public class CaiResolver {
             if (isNamespaceCompatible(ev.namespace, compatible)) {
                 supportScore += ev.weight;
             } else if (ev.namespace != null && !ev.namespace.isEmpty()) {
-                // Evidence points to a different, incompatible namespace
-                conflictScore += ev.weight;
+                // Evidence points to a different, incompatible namespace.
+                // PTA_CLASS evidence is "possible" (not exclusive) — discount conflict by 50%.
+                // STATIC_TYPE, ROOT_QUALIFIER, PATH_TOKEN are "exclusive" — full conflict penalty.
+                double conflictWeight = (ev.kind == EvidenceKind.PTA_CLASS) ? ev.weight * 0.5 : ev.weight;
+                conflictScore += conflictWeight;
             }
         }
         return supportScore - CONFLICT_PENALTY_GAMMA * conflictScore;
@@ -735,14 +744,15 @@ public class CaiResolver {
     // Phase 4: Joint Constraint Solving per Alias Component
     // ======================================================
 
-    /** Maximum number of call sites in a component before falling back to majority vote. */
-    private static final int LARGE_COMPONENT_THRESHOLD = 10;
+    // Component-label aggregation (solveByEnumeration) is O(K * N * C) where
+    // K=namespaces, N=call sites, C=candidates per site. Always tractable —
+    // no fallback needed.
 
     /**
      * Solves namespace constraints per alias component.
-     * Within a component (must-alias), call sites should share the same namespace.
+     * Within a component (type-consistent receivers), call sites should share the same namespace.
      * Outliers are allowed with a consistency penalty (soft consistency).
-     * Soft alias edges (may-alias) provide a bonus when namespaces agree.
+     * Soft alias edges (type-overlapping) are logged for diagnostic analysis.
      *
      * Objective: max Σ Score(c,a_c) - λ * Σ o_c + bonus * soft_agreements
      *
@@ -772,22 +782,18 @@ public class CaiResolver {
             }
             comp.candidateNamespaces = allNamespaces;
 
-            if (comp.callSites.size() > LARGE_COMPONENT_THRESHOLD || allNamespaces.size() > 8) {
-                // Fallback: majority vote — each site picks its best namespace,
-                // then the component uses the most popular namespace.
-                solveByMajorityVote(comp, siteCandidates);
-            } else if (comp.callSites.size() == 1) {
+            if (comp.callSites.size() == 1) {
                 // Singleton: pick the best candidate
                 solveSingleton(comp, siteCandidates);
             } else {
-                // Full enumeration
+                // Component-label aggregation: O(K * N * C) — always tractable
                 solveByEnumeration(comp, siteCandidates, allNamespaces);
             }
         }
 
-        // Apply soft alias edge bonus: if two sites connected by a soft edge
-        // ended up with the same namespace, add a consistency bonus to their scores.
-        // This rewards may-alias consistency without forcing it.
+        // Log soft-alias edge outcomes for diagnostic analysis (does not affect scores).
+        // Soft-alias edges are type-overlapping receivers whose namespace agreement
+        // is informative but does not participate in the joint objective.
         if (!softEdges.isEmpty()) {
             Map<Local, String> receiverToNamespace = new LinkedHashMap<>();
             for (CallSiteInfo site : allCallSites) {
@@ -800,17 +806,9 @@ public class CaiResolver {
                 String ns2 = receiverToNamespace.get(edge.v2);
                 if (ns1 != null && ns2 != null) {
                     Set<String> compatible = getCompatibleNamespaces(ns1);
-                    if (isNamespaceCompatible(ns2, compatible)) {
-                        // Soft alias edge agrees: add bonus to both sites' scores
-                        // Find the sites and boost their scores
-                        for (CallSiteInfo site : allCallSites) {
-                            if (site.receiver == edge.v1 || site.receiver == edge.v2) {
-                                if (site.assignedCandidate != null) {
-                                    site.assignedCandidate.score += SOFT_ALIAS_BONUS;
-                                }
-                            }
-                        }
-                    }
+                    boolean agrees = isNamespaceCompatible(ns2, compatible);
+                    Logger.log("  [CAIR] Soft-alias " + edge.v1.getName() + " -- " + edge.v2.getName()
+                            + " ns1=" + ns1 + " ns2=" + ns2 + " agree=" + agrees);
                 }
             }
         }
@@ -822,63 +820,19 @@ public class CaiResolver {
         if (!cands.isEmpty()) {
             // Best candidate is already first (sorted by score desc)
             site.assignedCandidate = cands.get(0);
-            site.evidence.addAll(extractEvidenceForSite(site));
-        }
-    }
-
-    private static void solveByMajorityVote(AliasComponent comp, List<List<CandidateApi>> siteCandidates) {
-        // Each site votes for its best namespace
-        Map<String, Double> namespaceVotes = new LinkedHashMap<>();
-        for (int i = 0; i < comp.callSites.size(); i++) {
-            List<CandidateApi> cands = siteCandidates.get(i);
-            if (!cands.isEmpty()) {
-                String bestNs = cands.get(0).namespace;
-                double bestScore = cands.get(0).score;
-                namespaceVotes.merge(bestNs, bestScore, Double::sum);
-            }
-        }
-
-        // Pick the namespace with highest total votes
-        String winnerNs = null;
-        double winnerScore = -1;
-        for (Map.Entry<String, Double> entry : namespaceVotes.entrySet()) {
-            if (entry.getValue() > winnerScore) {
-                winnerScore = entry.getValue();
-                winnerNs = entry.getKey();
-            }
-        }
-
-        // Reassign: for each site, pick the candidate matching the winning namespace
-        if (winnerNs != null) {
-            Set<String> compatibleWinner = getCompatibleNamespaces(winnerNs);
-            for (int i = 0; i < comp.callSites.size(); i++) {
-                List<CandidateApi> cands = siteCandidates.get(i);
-                // Find best candidate matching winner
-                CandidateApi best = null;
-                for (CandidateApi cand : cands) {
-                    if (isNamespaceCompatible(cand.namespace, compatibleWinner)) {
-                        best = cand;
-                        break; // Already sorted by score
-                    }
-                }
-                // If no candidate matches winner, keep the original best
-                if (best == null && !cands.isEmpty()) {
-                    best = cands.get(0);
-                }
-                // Write the solver's winner directly to the call site
-                if (best != null) {
-                    comp.callSites.get(i).assignedCandidate = best;
-                }
-            }
+            // Evidence was already extracted in Phase 1 (extractEvidence at Step 2)
         }
     }
 
     private static void solveByEnumeration(AliasComponent comp,
                                            List<List<CandidateApi>> siteCandidates,
                                            Set<String> allNamespaces) {
-        // Enumerate namespace assignments: each site gets assigned one of allNamespaces.
-        // Constraint: all sites in the same component must share the same namespace.
-        // So we just need to find the namespace that maximizes the total score.
+        // Enumerate namespace assignments: for each candidate namespace z,
+        // compute the total objective: Σ_i f_i(z) where
+        //   f_i(z) = max(best_same_ns_score, best_other_ns_score - λ)
+        // This allows a site to "outlier" — use its best candidate from a
+        // different namespace at a consistency penalty.
+        // Complexity: O(K * N * C) — always tractable.
 
         List<String> nsList = new ArrayList<>(allNamespaces);
         String bestNs = null;
@@ -887,24 +841,36 @@ public class CaiResolver {
         for (String ns : nsList) {
             Set<String> compatible = getCompatibleNamespaces(ns);
             double totalScore = 0;
-            boolean allSitesCovered = true;
 
             for (int i = 0; i < comp.callSites.size(); i++) {
                 List<CandidateApi> cands = siteCandidates.get(i);
-                double siteBestScore = 0;
-                boolean found = false;
+                double bestSameNs = Double.NEGATIVE_INFINITY;
+                double bestOtherNs = Double.NEGATIVE_INFINITY;
+
                 for (CandidateApi cand : cands) {
                     if (isNamespaceCompatible(cand.namespace, compatible)) {
-                        siteBestScore = Math.max(siteBestScore, cand.score);
-                        found = true;
+                        bestSameNs = Math.max(bestSameNs, cand.score);
+                    } else {
+                        bestOtherNs = Math.max(bestOtherNs, cand.score);
                     }
                 }
-                if (!found) {
-                    allSitesCovered = false;
-                    // Consistency penalty for sites that don't support this namespace
-                    siteBestScore = -CONSISTENCY_PENALTY_LAMBDA;
+
+                // Outlier formula: site can use best other-ns candidate at a penalty
+                double siteScore;
+                if (bestSameNs > Double.NEGATIVE_INFINITY) {
+                    siteScore = Math.max(bestSameNs,
+                            bestOtherNs > Double.NEGATIVE_INFINITY
+                                    ? bestOtherNs - CONSISTENCY_PENALTY_LAMBDA
+                                    : Double.NEGATIVE_INFINITY);
+                } else if (bestOtherNs > Double.NEGATIVE_INFINITY) {
+                    // No same-ns candidate; must use other-ns with penalty
+                    siteScore = bestOtherNs - CONSISTENCY_PENALTY_LAMBDA;
+                } else {
+                    // No candidates at all for this site
+                    siteScore = -CONSISTENCY_PENALTY_LAMBDA;
                 }
-                totalScore += siteBestScore;
+
+                totalScore += siteScore;
             }
 
             if (totalScore > bestTotalScore) {
@@ -918,21 +884,23 @@ public class CaiResolver {
             Set<String> compatibleBest = getCompatibleNamespaces(bestNs);
             for (int i = 0; i < comp.callSites.size(); i++) {
                 List<CandidateApi> cands = siteCandidates.get(i);
+
+                // For the winning namespace, assign the best matching candidate
                 CandidateApi best = null;
+                CandidateApi bestFallback = null;
+
                 for (CandidateApi cand : cands) {
-                    if (isNamespaceCompatible(cand.namespace, compatibleBest)) {
-                        best = cand;
-                        break;
+                    if (best == null && isNamespaceCompatible(cand.namespace, compatibleBest)) {
+                        best = cand;  // Already sorted by score desc
+                    }
+                    if (bestFallback == null) {
+                        bestFallback = cand;  // Overall best (outlier choice)
                     }
                 }
-                // If no candidate matches the winning namespace, keep original best
-                if (best == null && !cands.isEmpty()) {
-                    best = cands.get(0);
-                }
-                // Write the solver's winner directly to the call site
-                if (best != null) {
-                    comp.callSites.get(i).assignedCandidate = best;
-                }
+
+                // If no candidate matches the winning namespace, the site is an outlier:
+                // keep its own best candidate (the outlier choice with λ penalty)
+                comp.callSites.get(i).assignedCandidate = (best != null) ? best : bestFallback;
             }
         }
     }
@@ -960,8 +928,15 @@ public class CaiResolver {
             }
 
             // Pre-compute evidence flags (needed for both single and multi-namespace cases)
-            boolean hasStrongEvidence = result.callSite.evidence.stream()
-                    .anyMatch(ev -> ev.kind == EvidenceKind.PTA_CLASS || ev.kind == EvidenceKind.STATIC_TYPE);
+            // Strong evidence requires ALL PTA/STATIC_TYPE evidence to point to the same
+            // canonical namespace — scattered evidence is not "strong" for overriding ambiguity.
+            Set<String> strongNamespaces = result.callSite.evidence.stream()
+                    .filter(ev -> ev.kind == EvidenceKind.PTA_CLASS || ev.kind == EvidenceKind.STATIC_TYPE)
+                    .map(ev -> NamespaceResolver.getCanonicalNamespace(
+                            ev.namespace != null ? ev.namespace.toLowerCase(Locale.ROOT) : ""))
+                    .filter(ns -> ns != null && !ns.isEmpty())
+                    .collect(Collectors.toSet());
+            boolean hasStrongEvidence = strongNamespaces.size() == 1;
             boolean hasAnyEvidence = !result.callSite.evidence.isEmpty();
             String strippedMethod = NamePathMatcher.stripMethodArguments(result.callSite.methodName);
 
@@ -1002,18 +977,21 @@ public class CaiResolver {
                 continue;
             }
 
-            // Compute entropy
-            double totalScore = nsScores.values().stream().mapToDouble(Double::doubleValue).sum();
-            if (totalScore <= 0) {
-                result.entropy = 0.0;
-                result.isAmbiguous = false;
-                continue;
+            // Compute entropy using softmax normalization (handles negative scores correctly)
+            // Softmax: p_i = exp(s_i - max_s) / Σ exp(s_j - max_s)
+            // This ensures all probabilities are positive and sum to 1, even when
+            // conflict penalties produce negative candidate scores.
+            double maxScore = nsScores.values().stream()
+                    .mapToDouble(Double::doubleValue).max().orElse(0);
+            double sumExp = 0;
+            for (double score : nsScores.values()) {
+                sumExp += Math.exp(score - maxScore);  // numerical stability: subtract max
             }
 
             double entropy = 0;
             for (double score : nsScores.values()) {
-                double p = score / totalScore;
-                if (p > 0) {
+                double p = Math.exp(score - maxScore) / sumExp;
+                if (p > 1e-10) {
                     entropy -= p * (Math.log(p) / Math.log(2));
                 }
             }
@@ -1022,6 +1000,31 @@ public class CaiResolver {
             // Use AmbiguityModel which considers both entropy and inherent method ambiguity
             result.isAmbiguous = AmbiguityModel.isAmbiguous(
                     entropy, strippedMethod, hasStrongEvidence);
+
+            // Absolute score threshold: if the best candidate has very low score,
+            // the resolution is unreliable regardless of entropy
+            if (!result.isAmbiguous && result.bestCandidate != null
+                    && result.bestCandidate.score < AmbiguityModel.MIN_CONFIDENCE) {
+                result.isAmbiguous = true;
+                result.entropy = Math.max(result.entropy, 2.0);
+                Logger.log("  [CAIR] Ambiguous (low score=" + String.format("%.2f", result.bestCandidate.score)
+                        + " < MIN_CONFIDENCE=" + AmbiguityModel.MIN_CONFIDENCE + "): "
+                        + strippedMethod + " -> " + result.bestCandidate.namespace);
+            }
+
+            // Margin check: if top-1 and top-2 scores are too close, resolution is ambiguous
+            if (!result.isAmbiguous && nsScores.size() >= 2) {
+                List<Double> sortedScores = nsScores.values().stream()
+                        .sorted(Comparator.reverseOrder()).collect(Collectors.toList());
+                double margin = sortedScores.get(0) - sortedScores.get(1);
+                if (margin < AmbiguityModel.MARGIN_THRESHOLD) {
+                    result.isAmbiguous = true;
+                    result.entropy = Math.max(result.entropy, 1.5);
+                    Logger.log("  [CAIR] Ambiguous (small margin=" + String.format("%.2f", margin)
+                            + " < MARGIN_THRESHOLD=" + AmbiguityModel.MARGIN_THRESHOLD + "): "
+                            + strippedMethod);
+                }
+            }
 
             // Additional block: for inherently ambiguous methods (request, stop, register, etc.)
             // with NO namespace evidence at all, always mark as ambiguous.
@@ -1210,7 +1213,7 @@ public class CaiResolver {
             extractEvidence(site, andersen, cg);
         }
 
-        // Step 3: Build alias components (distinguishing must-alias vs may-alias)
+        // Step 3: Build alias components (distinguishing type-consistent vs type-overlapping)
         AliasComponentResult acResult = buildAliasComponents(callSites, andersen);
         List<AliasComponent> components = acResult.components;
         List<SoftAliasEdge> softEdges = acResult.softEdges;
@@ -1372,7 +1375,4 @@ public class CaiResolver {
      * Extracts raw namespace evidence for a call site (Phase 1 helper).
      * Returns the evidence directly, used for certificate generation.
      */
-    private static List<NamespaceEvidence> extractEvidenceForSite(CallSiteInfo site) {
-        return new ArrayList<>(site.evidence);
-    }
 }

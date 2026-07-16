@@ -23,6 +23,9 @@ public class AmbiguityModel {
     /** Minimum confidence score required to accept a non-ambiguous resolution. */
     public static final double MIN_CONFIDENCE = 0.4;
 
+    /** Minimum score margin between top-1 and top-2 candidates for confident resolution. */
+    public static final double MARGIN_THRESHOLD = 0.3;
+
     /** Scaling factor for catalog entropy's influence on the adaptive threshold. */
     public static final double CATALOG_ENTROPY_ALPHA = 0.3;
 
