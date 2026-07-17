@@ -1006,11 +1006,22 @@ public class CaiResolver {
                         .anyMatch(ev -> isNamespaceCompatible(ev.namespace, compatible));
             }
 
-            // Group candidates by canonical namespace
+            // Group candidates by canonical namespace, using ADJUSTED scores.
+            // Adjustment: subtract CONSISTENCY_PENALTY_LAMBDA for candidates whose
+            // namespace does not match the component namespace. This makes the
+            // ambiguity check consistent with the joint decision — if the joint
+            // solver chose componentNamespace z over a higher-scoring B candidate,
+            // the ambiguity check should reflect that B's effective utility was
+            // penalized by λ, not its raw score.
+            String componentNamespace = result.callSite != null ? result.callSite.componentNamespace : null;
             Map<String, Double> nsScores = new LinkedHashMap<>();
             for (CandidateApi cand : cands) {
                 String canonicalNs = getCanonicalNamespaceKey(cand.namespace);
-                nsScores.merge(canonicalNs, cand.score, Double::sum);
+                double adjustedScore = cand.score;
+                if (componentNamespace != null && !canonicalNs.equals(componentNamespace)) {
+                    adjustedScore -= CONSISTENCY_PENALTY_LAMBDA;
+                }
+                nsScores.merge(canonicalNs, adjustedScore, Double::sum);
             }
 
             if (nsScores.size() <= 1) {
