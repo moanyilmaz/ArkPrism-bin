@@ -117,9 +117,27 @@
                 "dataDirection": "source"
             },
             {
+                "directCall": true,
+                "namespace": "display",
+                "method": "getDefaultDisplaySync",
+                "permission": null,
+                "profilingCategory": "device_identity.screen",
+                "ohos_module": "@ohos:display",
+                "dataDirection": "source"
+            },
+            {
                 "directCall": false,
                 "namespace": "display",
                 "method": "display.Display.getDefaultDisplaySync",
+                "permission": null,
+                "profilingCategory": "device_identity.screen",
+                "ohos_module": "@ohos:display",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": true,
+                "namespace": "display",
+                "method": "getAllDisplays",
                 "permission": null,
                 "profilingCategory": "device_identity.screen",
                 "ohos_module": "@ohos:display",
@@ -195,7 +213,7 @@
         "systemPackage": "@kit.AudioKit",
         "privacyApis": [
             {
-                "directCall": true,
+                "directCall": false,
                 "namespace": "audio",
                 "method": "getAudioScene",
                 "permission": null,
@@ -3373,6 +3391,15 @@
                 "directCall": true,
                 "namespace": "geoLocationManager",
                 "method": "getAddressesFromLocation",
+                "permission": "ohos.permission.LOCATION",
+                "profilingCategory": "location",
+                "ohos_module": "@ohos:geoLocationManager",
+                "dataDirection": "source"
+            },
+            {
+                "directCall": true,
+                "namespace": "geoLocationManager",
+                "method": "getAddressesFromLocationName",
                 "permission": "ohos.permission.LOCATION",
                 "profilingCategory": "location",
                 "ohos_module": "@ohos:geoLocationManager",
@@ -7425,7 +7452,7 @@
         "systemPackage": "@ohos.multimedia.audio",
         "privacyApis": [
             {
-                "directCall": true,
+                "directCall": false,
                 "namespace": "audio",
                 "method": "getAudioScene",
                 "permission": null,

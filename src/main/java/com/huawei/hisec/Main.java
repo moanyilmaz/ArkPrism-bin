@@ -444,6 +444,11 @@ public class Main {
         Logger.log("[+] App report saved: " + outputFile.getAbsolutePath());
     }
 
+    private static final ObjectMapper JSON_MAPPER = new ObjectMapper();
+    static {
+        JSON_MAPPER.enable(SerializationFeature.INDENT_OUTPUT);
+    }
+
     private static void saveObject(Object obj, File outputFile) {
         try {
             File parent = outputFile.getParentFile();
@@ -451,9 +456,7 @@ public class Main {
                 parent.mkdirs();
             }
 
-            ObjectMapper mapper = new ObjectMapper();
-            mapper.enable(SerializationFeature.INDENT_OUTPUT);
-            mapper.writeValue(outputFile, obj);
+            JSON_MAPPER.writeValue(outputFile, obj);
 
         } catch (IOException e) {
             Logger.log("[-] JSON save failed: " + outputFile.getAbsolutePath());

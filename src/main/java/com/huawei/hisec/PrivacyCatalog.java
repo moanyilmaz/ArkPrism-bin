@@ -280,20 +280,7 @@ public class PrivacyCatalog {
         public List<PrivacyApiRule> privacyApis;
     }
 
-    public static class PrivacyApiRule {
-        public String namespace;
-        public String method;
-        public String category;
-        public String profilingCategory;
-        public String permission;
-        /**
-         * Explicit data direction declaration.
-         * "source" | "sink" | "both" | "excluded"
-         * Takes precedence over profilingCategory inference.
-         */
-        public String dataDirection;
-        public Integer sensitiveArgIndex;
-    }
+    // PrivacyApiRule is now defined in its own file (PrivacyApiRule.java)
 
     // ======================================================
     // Utility
