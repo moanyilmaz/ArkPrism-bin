@@ -1019,20 +1019,13 @@ public class CaiResolver {
                 result.entropy = 0.0;
                 result.isAmbiguous = false;
 
-                // Absolute score threshold: even single-namespace candidates must have
-                // sufficient supporting evidence (supportScore, which excludes conflict penalty).
-                // Using final score would be wrong — conflict penalties can push scores negative
-                // even for genuine privacy APIs with strong supporting evidence.
-                if (result.bestCandidate != null
-                        && result.bestCandidate.supportScore < AmbiguityModel.MIN_CONFIDENCE) {
-                    result.isAmbiguous = true;
-                    result.entropy = 2.0;
-                    Logger.log("  [CAIR] Ambiguous (low supportScore=" + String.format("%.2f", result.bestCandidate.supportScore)
-                            + " < MIN_CONFIDENCE=" + AmbiguityModel.MIN_CONFIDENCE
-                            + ", single namespace): "
-                            + strippedMethod + " -> " + result.bestCandidate.namespace);
-                    continue;
-                }
+                // NOTE: We do NOT apply MIN_CONFIDENCE threshold for single-namespace candidates.
+                // Rationale: if only one namespace produces candidates, there is no competition
+                // to resolve — the method IS in that namespace. MIN_CONFIDENCE conflates
+                // "lack of supporting evidence" with "wrong resolution", but in the single-NS
+                // case there is no alternative to be wrong about. Genuine ambiguous methods
+                // (request, stop, register) are already caught by the inherently-ambiguous
+                // check below.
 
                 // Check: inherently ambiguous method + no SUPPORTING evidence + low score = block
                 boolean isGeneric = AmbiguityModel.isInherentlyAmbiguous(strippedMethod);
