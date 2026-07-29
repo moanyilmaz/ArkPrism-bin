@@ -23,6 +23,8 @@ target/
 /nbbuild/
 /dist/
 !dist/deliver-source/
+!dist/ArkPrism-src-v3e.zip
+!dist/ArkPrism-bin-v3e.zip
 /nbdist/
 /.nb-gradle/
 build/
