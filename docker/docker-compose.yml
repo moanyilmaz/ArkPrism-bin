@@ -1,0 +1,21 @@
+# ArkPrism Native SO Scanner - Docker Compose Configuration
+#
+# This compose file is for building the Docker image.
+# The Java main program invokes the scanner via `docker run --rm` for each .so file,
+# so docker-compose is only needed for building, not for running the actual scans.
+#
+# Usage:
+#   docker-compose build          # Build the scanner image
+#   docker-compose down           # Remove containers
+#
+# To run scans, use the Java program with ARKPRISM_NATIVE_MODE=docker:
+#   set ARKPRISM_NATIVE_MODE=docker  (Windows)
+#   export ARKPRISM_NATIVE_MODE=docker  (Linux/macOS)
+#   run.bat / run.sh
+
+services:
+  native-scanner:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.native-scanner
+    image: arkprism/native-scanner:latest
