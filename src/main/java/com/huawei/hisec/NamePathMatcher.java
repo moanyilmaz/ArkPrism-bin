@@ -244,11 +244,18 @@ public class NamePathMatcher {
      * also matches "@kit.LocationKit"), we accept any alias at the namespace position.
      */
     public static boolean namespaceMatchesForMethod(List<String> pathTokens, String baseMethod, String namespace) {
-        if (pathTokens == null || namespace == null || namespace.isEmpty() || baseMethod == null) {
+        if (pathTokens == null || namespace == null || baseMethod == null) {
             return false;
         }
 
         int methodTokenCount = baseMethod.contains(".") ? baseMethod.split("\\.").length : 1;
+
+        // Reviewed module-level functions have no receiver namespace. Accept
+        // them only when the resolved path also contains no predecessor token.
+        if (namespace.isEmpty()) {
+            return pathTokens.size() == methodTokenCount;
+        }
+
         int namespaceIndex = pathTokens.size() - methodTokenCount - 1;
 
         if (namespaceIndex < 0) {

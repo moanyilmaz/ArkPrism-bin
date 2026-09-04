@@ -1,7 +1,5 @@
 package com.huawei.hisec;
 
-import com.fasterxml.jackson.core.type.TypeReference;
-import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.huawei.hianalyzer.analysis.Stage;
@@ -45,7 +43,8 @@ public class PreciseSensitiveApiScanner {
      * multi-evidence scoring, and entropy-based ambiguity assessment instead of the
      * per-call-site heuristic cascade. When false, falls back to the original logic.
      */
-    private static final boolean USE_CAIR = true;
+    private static final boolean USE_CAIR = Boolean.parseBoolean(
+            System.getProperty("arkprism.cair.enabled", "true"));
     /**
      * Enable SSA transformation before scanning.
      * SSA converts phi nodes and copies into explicit SSA form, enabling more accurate
@@ -93,13 +92,6 @@ public class PreciseSensitiveApiScanner {
     // 1. JSON Rule Models
     // ======================================================
 
-    public static class PrivacyPackageInfo {
-        public String systemPackage;
-        public List<PrivacyApiRule> privacyApis;
-    }
-
-    // PrivacyApiRule is now defined in its own file (PrivacyApiRule.java)
-
     public static class PrivacyApiRuleWithPkg {
         public String systemPackage;
         public PrivacyApiRule rule;
@@ -119,6 +111,9 @@ public class PreciseSensitiveApiScanner {
         public String permission;
         public String profilingCategory;
         public String dataDirection;  // "source" | "sink" | "both"
+        public String apiSignature;
+        public String dataType;
+        public String label;
         public String matchedFullName;
         public String stmtClass;
         public String stmtText;
@@ -211,15 +206,13 @@ public class PreciseSensitiveApiScanner {
             return result;
         }
 
-        List<PrivacyPackageInfo> packageInfos;
+        List<PrivacyApiRuleWithPkg> allRules;
         try {
-            packageInfos = loadPrivacyApis(ruleJsonFile.getAbsolutePath());
+            allRules = loadPrivacyApis(ruleJsonFile.getAbsolutePath());
         } catch (IOException e) {
             result.warnings.add("Failed to load privacy rule json: " + e.getMessage());
             return result;
         }
-
-        List<PrivacyApiRuleWithPkg> allRules = flattenRules(packageInfos);
 
         // Filter out excluded rules (dataDirection="excluded") — they are not privacy-sensitive
         long excludedCount = allRules.stream()
@@ -732,6 +725,9 @@ public class PreciseSensitiveApiScanner {
         usage.apiPackage = normalizeApiPackage(hit.systemPackage);
         usage.namespace = hit.namespace;
         usage.method = hit.method;
+        usage.apiSignature = hit.apiSignature;
+        usage.dataType = hit.dataType;
+        usage.label = hit.label;
         usage.args = extractArgsFromStmt(hit.stmtText);
         usage.code = hit.stmtText;
         usage.file = hit.file != null ? hit.file : abcFile.getName();
@@ -998,11 +994,8 @@ public class PreciseSensitiveApiScanner {
         String stmtText = safe(stmt);
         boolean assignmentLike = stmtText != null && stmtText.contains("=");
 
-        // Two-pass matching: first try rules with parenthesized arguments (most specific),
-        // then fall back to rules without arguments (more general). This ensures that
-        // sensor.on('SensorId.ACCELEROMETER') (with specific permission) takes priority
-        // over sensor.on (generic) when the argument can be resolved.
-        SensitiveApiHit fallbackHit = null;
+        SensitiveApiHit bestHit = null;
+        int bestScore = Integer.MIN_VALUE;
 
         for (PrivacyApiRuleWithPkg item : directRules) {
             // Strip parenthesized arguments from the rule method name.
@@ -1012,7 +1005,7 @@ public class PreciseSensitiveApiScanner {
             String baseMethod = stripMethodArguments(item.rule.method);
 
             if (!methodMatchesPath(info, baseMethod)
-                    || !namespaceMatchesForMethod(info.pathTokens, baseMethod, item.rule.namespace)) {
+                    || !reviewedNamespaceMatches(info.pathTokens, baseMethod, item.rule)) {
                 continue;
             }
 
@@ -1024,20 +1017,22 @@ public class PreciseSensitiveApiScanner {
                 if (!callStmtArgsMatchArgumentPattern(stmt, stmtText, expectedArg)) {
                     continue; // Argument doesn't match — skip this specific rule
                 }
-                // Argument matches — this is the most specific match, return immediately
-                SensitiveApiHit hit = createBaseHit(stmt, info, fileName, functionName, item, layer, sourceKind);
-                hit.category = assignmentLike ? "direct invoke stmt after assignment" : "direct invoke stmt";
-                return hit;
             }
 
-            // No parenthesized argument — this is a generic rule. Save as fallback.
-            if (fallbackHit == null) {
-                fallbackHit = createBaseHit(stmt, info, fileName, functionName, item, layer, sourceKind);
-                fallbackHit.category = assignmentLike ? "direct invoke stmt after assignment" : "direct invoke stmt";
+            int score = reviewedRuleEvidenceScore(stmt, info, item);
+            if (expectedArg != null) {
+                score += 100;
+            }
+            if (score > bestScore) {
+                bestHit = createBaseHit(
+                        stmt, info, fileName, functionName, item, layer, sourceKind);
+                bestHit.category = assignmentLike
+                        ? "direct invoke stmt after assignment" : "direct invoke stmt";
+                bestScore = score;
             }
         }
 
-        return fallbackHit;
+        return bestHit;
     }
 
     private SensitiveApiHit matchIndirectCall(
@@ -1059,8 +1054,8 @@ public class PreciseSensitiveApiScanner {
         String joinedPath = String.join(".", info.pathTokens);
         String stmtText = safe(stmt);
 
-        // Two-pass matching: prefer rules with matching parenthesized arguments
-        SensitiveApiHit fallbackHit = null;
+        SensitiveApiHit bestHit = null;
+        int bestScore = Integer.MIN_VALUE;
 
         // Namespace inference for indirect calls: try multiple strategies to determine
         // the namespace of the base variable in an InstanceCallExpr.
@@ -1188,18 +1183,21 @@ public class PreciseSensitiveApiScanner {
                 if (!callStmtArgsMatchArgumentPattern(stmt, stmtText, expectedArg)) {
                     continue;
                 }
-                SensitiveApiHit hit = createBaseHit(stmt, info, fileName, functionName, item, layer, sourceKind);
-                hit.category = "indirect invoke";
-                return hit;
             }
 
-            if (fallbackHit == null) {
-                fallbackHit = createBaseHit(stmt, info, fileName, functionName, item, layer, sourceKind);
-                fallbackHit.category = "indirect invoke";
+            int score = reviewedRuleEvidenceScore(stmt, info, item);
+            if (expectedArg != null) {
+                score += 100;
+            }
+            if (score > bestScore) {
+                bestHit = createBaseHit(
+                        stmt, info, fileName, functionName, item, layer, sourceKind);
+                bestHit.category = "indirect invoke";
+                bestScore = score;
             }
         }
 
-        return fallbackHit;
+        return bestHit;
     }
 
     private Set<String> inferNamespaceCandidatesFromCallBase(Stmt stmt, Andersen andersen, CallGraph cg) {
@@ -1291,6 +1289,9 @@ public class PreciseSensitiveApiScanner {
                 ? item.rule.profilingCategory
                 : item.rule.category;
         hit.dataDirection = item.rule.dataDirection;
+        hit.apiSignature = item.rule.apiSignature;
+        hit.dataType = item.rule.dataType;
+        hit.label = item.rule.label;
         hit.matchedFullName = info.original;
         hit.stmtClass = stmt.getClass().getName();
         hit.stmtText = safe(stmt);
@@ -1534,41 +1535,119 @@ public class PreciseSensitiveApiScanner {
         return false;
     }
 
+    /**
+     * Ranks otherwise matching reviewed rules using evidence that survives in
+     * bytecode. Missing description or module evidence never blocks a match.
+     */
+    private int reviewedRuleEvidenceScore(
+            Stmt stmt, ResolvedNameInfo info, PrivacyApiRuleWithPkg item) {
+        if (item == null || item.rule == null) {
+            return 0;
+        }
+        int score = 0;
+
+        Integer actualArgumentCount = getCallArgumentCount(stmt);
+        Integer minimum = item.rule.minimumArgumentCount;
+        Integer maximum = item.rule.maximumArgumentCount;
+        if (actualArgumentCount != null && minimum != null && maximum != null) {
+            if (actualArgumentCount >= minimum && actualArgumentCount <= maximum) {
+                score += 8;
+            } else {
+                score -= 2;
+            }
+        }
+
+        score += reviewedModuleEvidenceScore(
+                info, item.rule.sdkModule, item.systemPackage);
+        if (item.rule.moduleAlias != null && info != null && info.pathTokens != null) {
+            for (String token : info.pathTokens) {
+                if (item.rule.moduleAlias.equalsIgnoreCase(token)) {
+                    score += 4;
+                    break;
+                }
+            }
+        }
+        return score;
+    }
+
+    private boolean reviewedNamespaceMatches(
+            List<String> pathTokens, String baseMethod, PrivacyApiRule rule) {
+        if (rule == null) {
+            return false;
+        }
+        if (namespaceMatchesForMethod(pathTokens, baseMethod, rule.namespace)) {
+            return true;
+        }
+        if (rule.namespace == null || !rule.namespace.isEmpty()
+                || rule.moduleAlias == null || pathTokens == null) {
+            return false;
+        }
+        int methodTokenCount = baseMethod != null && baseMethod.contains(".")
+                ? baseMethod.split("\\.").length : 1;
+        int aliasIndex = pathTokens.size() - methodTokenCount - 1;
+        return aliasIndex >= 0
+                && rule.moduleAlias.equalsIgnoreCase(pathTokens.get(aliasIndex));
+    }
+
+    private Integer getCallArgumentCount(Stmt stmt) {
+        if (!(stmt instanceof CallStmt)) {
+            return null;
+        }
+        try {
+            var callExpr = ((CallStmt) stmt).getCallExpr();
+            if (callExpr == null || callExpr.getArgList() == null) {
+                return null;
+            }
+            return callExpr.getArgList().size();
+        } catch (Throwable ignored) {
+            return null;
+        }
+    }
+
+    private int reviewedModuleEvidenceScore(
+            ResolvedNameInfo info, String sdkModule, String systemPackage) {
+        if (info == null || info.original == null) {
+            return 0;
+        }
+        String resolved = normalizeModuleEvidence(info.original);
+        int score = 0;
+
+        if (sdkModule != null && !sdkModule.isBlank()) {
+            String module = normalizeModuleEvidence(sdkModule);
+            if (resolved.contains(module)) {
+                score += 12;
+            } else if ((module.startsWith("@ohos.") && resolved.contains("@hms."))
+                    || (module.startsWith("@hms.") && resolved.contains("@ohos."))) {
+                score -= 4;
+            }
+        }
+
+        if (systemPackage != null && !systemPackage.isBlank()
+                && resolved.contains(normalizeModuleEvidence(systemPackage))) {
+            score += 6;
+        }
+        return score;
+    }
+
+    private String normalizeModuleEvidence(String value) {
+        return value == null ? "" : value.trim().toLowerCase(Locale.ROOT)
+                .replace(':', '.');
+    }
+
     private boolean isReachableFromEntry(Stmt targetStmt) {
         return ReachabilityAnalyzer.isReachableFromEntry(targetStmt);
     }
 
 
-    private List<PrivacyPackageInfo> loadPrivacyApis(String jsonPath) throws IOException {
-        ObjectMapper mapper = new ObjectMapper();
-        mapper.configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
-        return mapper.readValue(new File(jsonPath), new TypeReference<List<PrivacyPackageInfo>>() {});
-    }
-
-    private List<PrivacyApiRuleWithPkg> flattenRules(List<PrivacyPackageInfo> packageInfos) {
+    private List<PrivacyApiRuleWithPkg> loadPrivacyApis(String jsonPath) throws IOException {
         List<PrivacyApiRuleWithPkg> res = new ArrayList<>();
-
-        if (packageInfos == null) {
-            return res;
+        for (PrivacyApiConfigLoader.LoadedRule loaded
+                : PrivacyApiConfigLoader.load(new File(jsonPath))) {
+            PrivacyApiRuleWithPkg item = new PrivacyApiRuleWithPkg();
+            item.systemPackage = loaded.systemPackage;
+            item.rule = loaded.rule;
+            res.add(item);
         }
-
-        for (PrivacyPackageInfo pkg : packageInfos) {
-            if (pkg == null || pkg.privacyApis == null) {
-                continue;
-            }
-
-            for (PrivacyApiRule rule : pkg.privacyApis) {
-                if (rule == null) {
-                    continue;
-                }
-
-                PrivacyApiRuleWithPkg item = new PrivacyApiRuleWithPkg();
-                item.systemPackage = pkg.systemPackage;
-                item.rule = rule;
-                res.add(item);
-            }
-        }
-
         return res;
     }
 

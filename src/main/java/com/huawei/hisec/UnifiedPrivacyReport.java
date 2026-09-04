@@ -115,6 +115,21 @@ public class UnifiedPrivacyReport {
         public String method;
 
         /**
+         * Exact API identity from the reviewed ArkTS catalog.
+         */
+        public String apiSignature;
+
+        /**
+         * PAC data type from the reviewed catalog.
+         */
+        public String dataType;
+
+        /**
+         * PAC label from the reviewed catalog.
+         */
+        public String label;
+
+        /**
          * Arguments.
          * ArkTS: can be parsed from Stmt;
          * Native: usually empty.

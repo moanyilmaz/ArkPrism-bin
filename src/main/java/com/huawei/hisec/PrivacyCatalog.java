@@ -1,8 +1,5 @@
 package com.huawei.hisec;
 
-import com.fasterxml.jackson.core.type.TypeReference;
-import com.fasterxml.jackson.databind.DeserializationFeature;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import com.huawei.hianalyzer.analysis.base.HiFile;
 import com.huawei.hianalyzer.ir.stmt.CallStmt;
 import com.huawei.hianalyzer.ir.stmt.Stmt;
@@ -22,9 +19,6 @@ import java.util.*;
  * The inference fallback only handles JSON files without dataDirection.
  */
 public class PrivacyCatalog {
-
-    private static final ObjectMapper MAPPER = new ObjectMapper()
-            .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
 
     /**
      * Source API patterns: namespace + method (e.g. "geoLocationManager.getCurrentLocation").
@@ -157,45 +151,43 @@ public class PrivacyCatalog {
         if (!f.exists()) return;
 
         try {
-            List<PrivacyApiPackage> packages = MAPPER.readValue(
-                    f, new TypeReference<List<PrivacyApiPackage>>() {}
-            );
+            List<PrivacyApiConfigLoader.LoadedRule> rules =
+                    PrivacyApiConfigLoader.load(f);
 
             int sourceCount = 0, sinkCount = 0, excludedCount = 0, unknownCount = 0;
 
-            for (PrivacyApiPackage pkg : packages) {
-                if (pkg.privacyApis == null) continue;
+            for (PrivacyApiConfigLoader.LoadedRule loaded : rules) {
+                PrivacyApiRule rule = loaded.rule;
+                if (rule == null || rule.namespace == null || rule.method == null) continue;
 
-                for (PrivacyApiRule rule : pkg.privacyApis) {
-                    if (rule.namespace == null || rule.method == null) continue;
+                String baseMethod = NamePathMatcher.stripMethodArguments(rule.method);
+                String fullName = rule.namespace.isEmpty()
+                        ? baseMethod : rule.namespace + "." + baseMethod;
+                String direction = resolveDirection(rule);
 
-                    String fullName = rule.namespace + "." + rule.method;
-                    String direction = resolveDirection(rule);
+                if ("excluded".equals(direction)) {
+                    excludedCount++;
+                    continue;
+                }
 
-                    if ("excluded".equals(direction)) {
-                        excludedCount++;
-                        continue;
+                if ("source".equals(direction) || "both".equals(direction)) {
+                    sourcePatterns.add(fullName);
+                    sourceCount++;
+
+                    String cat = rule.profilingCategory;
+                    if (cat != null) {
+                        sourceByCategory.computeIfAbsent(cat, k -> new HashSet<>()).add(fullName);
                     }
+                }
 
-                    if ("source".equals(direction) || "both".equals(direction)) {
-                        sourcePatterns.add(fullName);
-                        sourceCount++;
+                if ("sink".equals(direction) || "both".equals(direction)) {
+                    sinkPatterns.add(fullName);
+                    sinkPatterns.add("@system:@ohos:" + fullName);
+                    sinkCount++;
+                }
 
-                        String cat = rule.profilingCategory;
-                        if (cat != null) {
-                            sourceByCategory.computeIfAbsent(cat, k -> new HashSet<>()).add(fullName);
-                        }
-                    }
-
-                    if ("sink".equals(direction) || "both".equals(direction)) {
-                        sinkPatterns.add(fullName);
-                        sinkPatterns.add("@system:@ohos:" + fullName);
-                        sinkCount++;
-                    }
-
-                    if (direction == null) {
-                        unknownCount++;
-                    }
+                if (direction == null) {
+                    unknownCount++;
                 }
             }
 
@@ -269,18 +261,6 @@ public class PrivacyCatalog {
 
         return null;
     }
-
-    // ======================================================
-    // JSON model classes
-    // ======================================================
-
-    public static class PrivacyApiPackage {
-        public String systemPackage;
-        public String category;
-        public List<PrivacyApiRule> privacyApis;
-    }
-
-    // PrivacyApiRule is now defined in its own file (PrivacyApiRule.java)
 
     // ======================================================
     // Utility
