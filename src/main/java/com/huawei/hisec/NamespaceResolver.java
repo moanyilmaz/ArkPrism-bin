@@ -72,8 +72,37 @@ public class NamespaceResolver {
             Map.entry("connection", List.of("NetConnection", "@ohos.net.connection")),
             // Class-to-module aliases: userAuth APIs use UserAuth as class name
             // in the binary, but the rule namespace is "userAuth".
-            Map.entry("UserAuth", List.of("userAuth", "@ohos.userIAM.userAuth")),
-            Map.entry("userAuth", List.of("UserAuth", "@ohos.userIAM.userAuth"))
+            // UserAuthInstance is the product class of getUserAuthInstance factory.
+            Map.entry("UserAuth", List.of("userAuth", "@ohos.userIAM.userAuth", "UserAuthInstance", "getUserAuthInstance")),
+            Map.entry("userAuth", List.of("UserAuth", "@ohos.userIAM.userAuth", "UserAuthInstance", "getUserAuthInstance")),
+            Map.entry("UserAuthInstance", List.of("UserAuth", "userAuth", "@ohos.userIAM.userAuth", "getUserAuthInstance")),
+            Map.entry("getUserAuthInstance", List.of("UserAuth", "userAuth", "@ohos.userIAM.userAuth", "UserAuthInstance")),
+            // PhotoAccessHelper and its related types (Album, AbsAlbum, PhotoAsset)
+            // are all in the @ohos.multimedia.photoAccessHelper module.
+            // When PTA/evidence points to one, the others should be considered compatible.
+            Map.entry("PhotoAccessHelper", List.of("photoAccessHelper", "@ohos.multimedia.photoAccessHelper",
+                    "Album", "AbsAlbum")),
+            Map.entry("photoAccessHelper", List.of("PhotoAccessHelper", "@ohos.multimedia.photoAccessHelper",
+                    "Album", "AbsAlbum")),
+            Map.entry("Album", List.of("PhotoAccessHelper", "photoAccessHelper",
+                    "AbsAlbum", "@ohos.multimedia.photoAccessHelper")),
+            Map.entry("AbsAlbum", List.of("PhotoAccessHelper", "photoAccessHelper",
+                    "Album", "@ohos.multimedia.photoAccessHelper")),
+            Map.entry("PhotoAsset", List.of("photoAsset", "@ohos.multimedia.photoAccessHelper")),
+            Map.entry("photoAsset", List.of("PhotoAsset", "@ohos.multimedia.photoAccessHelper")),
+            // AVMetadataExtractor is in the @ohos.multimedia.media module.
+            Map.entry("AVMetadataExtractor", List.of("avMetadataExtractor", "@ohos.multimedia.media")),
+            Map.entry("avMetadataExtractor", List.of("AVMetadataExtractor", "@ohos.multimedia.media")),
+            // Unprefixed namespace aliases for geoLocationManager/geolocation
+            // (PACKAGE_ALIASES uses @ohos.* prefixes, but HiAnalyzer path tokens use bare names)
+            Map.entry("geoLocationManager", List.of("geolocation", "@ohos.geoLocationManager", "@ohos.geolocation", "@kit.LocationKit")),
+            Map.entry("geolocation", List.of("geoLocationManager", "@ohos.geoLocationManager", "@ohos.geolocation", "@kit.LocationKit")),
+            // @kit.* → @ohos.* module mappings for import gating
+            Map.entry("@kit.CalendarKit", List.of("@ohos.calendarManager")),
+            Map.entry("@ohos.calendarManager", List.of("@kit.CalendarKit", "Calendar")),
+            Map.entry("Calendar", List.of("@ohos.calendarManager", "@kit.CalendarKit")),
+            Map.entry("@kit.MediaLibraryKit", List.of("@ohos.multimedia.photoAccessHelper")),
+            Map.entry("@ohos.multimedia.photoAccessHelper", List.of("@kit.MediaLibraryKit", "PhotoAccessHelper", "photoAccessHelper", "Album", "AbsAlbum", "PhotoAsset"))
     );
 
     // ======================================================
@@ -140,7 +169,13 @@ public class NamespaceResolver {
             Map.entry("subscribesensor", "sensor"),
             Map.entry("unsubscribesensor", "sensor"),
             // distributed device manager
-            Map.entry("createdevicemanager", "distributedDeviceManager")
+            Map.entry("createdevicemanager", "distributedDeviceManager"),
+            // photo access helper
+            Map.entry("getphotoaccesshelper", "PhotoAccessHelper"),
+            // AVMetadataExtractor
+            Map.entry("createavmetadataextractor", "AVMetadataExtractor"),
+            // User authentication
+            Map.entry("getuserauthinstance", "UserAuthInstance")
     );
 
     // ======================================================
@@ -1027,5 +1062,49 @@ public class NamespaceResolver {
         if (namespace == null) return false;
         String lower = namespace.toLowerCase(Locale.ROOT);
         return lower.contains("ohos") || lower.contains("kit") || PACKAGE_ALIASES.containsKey(namespace);
+    }
+
+    /**
+     * Checks if two namespace strings are compatible (i.e., they refer to the same
+     * SDK module, possibly through aliases).
+     *
+     * This is a deterministic check: if pathNamespace is a known alias of ruleNamespace
+     * (or vice versa) via PACKAGE_ALIASES, they are compatible.
+     *
+     * @param pathNamespace The namespace token from HiAnalyzer's resolved path
+     * @param ruleNamespace The namespace from the privacy rule
+     * @return true if they refer to the same SDK module
+     */
+    public static boolean isAliasCompatible(String pathNamespace, String ruleNamespace) {
+        if (pathNamespace == null || ruleNamespace == null) {
+            return false;
+        }
+        if (pathNamespace.equals(ruleNamespace)) {
+            return true;
+        }
+        String pathLower = pathNamespace.toLowerCase(Locale.ROOT);
+        String ruleLower = ruleNamespace.toLowerCase(Locale.ROOT);
+        if (pathLower.equals(ruleLower)) {
+            return true;
+        }
+        // Check if pathNamespace is an alias of ruleNamespace
+        List<String> aliases = PACKAGE_ALIASES.get(ruleLower);
+        if (aliases != null) {
+            for (String alias : aliases) {
+                if (alias.toLowerCase(Locale.ROOT).equals(pathLower)) {
+                    return true;
+                }
+            }
+        }
+        // Check if ruleNamespace is an alias of pathNamespace
+        aliases = PACKAGE_ALIASES.get(pathLower);
+        if (aliases != null) {
+            for (String alias : aliases) {
+                if (alias.toLowerCase(Locale.ROOT).equals(ruleLower)) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 }

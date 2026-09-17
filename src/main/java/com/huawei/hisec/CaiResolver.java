@@ -1229,13 +1229,27 @@ public class CaiResolver {
                 // check below.
 
                 // Check: inherently ambiguous method + no SUPPORTING evidence + low score = block
+                // This catches cases like "getConfig" resolved to Calendar when PTA points to
+                // LiveEventBus/MspConfig — the method is too generic to trust without evidence.
                 boolean isGeneric = AmbiguityModel.isInherentlyAmbiguous(strippedMethod);
                 if (!result.isAmbiguous && isGeneric && !hasSupportingEvidence && result.bestCandidate != null
-                        && result.bestCandidate.score <= 0.1) {
+                        && result.bestCandidate.score <= 0.3) {
                     result.isAmbiguous = true;
                     result.entropy = 2.0;
                     Logger.log("  [CAIR] Ambiguous (no supporting evidence, generic method): "
                             + strippedMethod + " -> " + result.bestCandidate.namespace);
+                }
+                // Additional: even with some supporting evidence, if all STRONG evidence
+                // (PTA_CLASS/STATIC_TYPE) contradicts the best candidate's namespace,
+                // the resolution is unreliable for generic methods.
+                if (!result.isAmbiguous && isGeneric && result.bestCandidate != null
+                        && !strongNamespaces.isEmpty() && !hasStrongEvidence) {
+                    // All strong evidence points away from the chosen namespace
+                    result.isAmbiguous = true;
+                    result.entropy = Math.max(result.entropy, 2.0);
+                    Logger.log("  [CAIR] Ambiguous (strong evidence contradicts, generic method): "
+                            + strippedMethod + " -> " + result.bestCandidate.namespace
+                            + " (strongNs=" + strongNamespaces + ")");
                 }
                 continue;
             }
@@ -1262,7 +1276,7 @@ public class CaiResolver {
 
             // Use AmbiguityModel which considers both entropy and inherent method ambiguity
             result.isAmbiguous = AmbiguityModel.isAmbiguous(
-                    entropy, strippedMethod, hasStrongEvidence);
+                    entropy, strippedMethod, hasStrongEvidence, hasSupportingEvidence);
 
             // Absolute score threshold: if the best candidate has very low supporting evidence,
             // the resolution is unreliable regardless of entropy. Check supportScore (excludes
@@ -1295,7 +1309,7 @@ public class CaiResolver {
             // This matches the old matchIndirectCall's GENERIC_METHOD_BLACKLIST logic:
             //   if (GENERIC_METHOD_BLACKLIST.contains(method) && !hasPtaCandidates && namespaceCandidates.isEmpty())
             if (!result.isAmbiguous && AmbiguityModel.isInherentlyAmbiguous(strippedMethod)
-                    && !hasSupportingEvidence && result.bestCandidate != null && result.bestCandidate.score <= 0.1) {
+                    && !hasSupportingEvidence && result.bestCandidate != null && result.bestCandidate.score <= 0.3) {
                 result.isAmbiguous = true;
                 result.entropy = Math.max(result.entropy, 2.0);
                 Logger.log("  [CAIR] Ambiguous (no supporting evidence, generic method, multi-ns): "

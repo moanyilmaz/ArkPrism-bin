@@ -250,10 +250,48 @@ public class NamePathMatcher {
 
         int methodTokenCount = baseMethod.contains(".") ? baseMethod.split("\\.").length : 1;
 
-        // Reviewed module-level functions have no receiver namespace. Accept
-        // them only when the resolved path also contains no predecessor token.
+        // Reviewed module-level functions have no receiver namespace.
+        // Strict check: resolved path contains exactly the method tokens (e.g.,
+        // pathTokens=["getSystemInfoSync"] for a top-level function call).
+        // Relaxed check: when the path has extra tokens but the method token
+        // is present at the expected position, accept if no other rule claims
+        // a more specific namespace at that position. This handles cases like
+        // framework objects calling no-namespace APIs (e.g., ldlexvar.getSystemInfoSync()).
         if (namespace.isEmpty()) {
-            return pathTokens.size() == methodTokenCount;
+            if (pathTokens.size() == methodTokenCount) {
+                return true;
+            }
+            // Relaxed: check if the last methodTokenCount tokens match the method,
+            // and there is no namespace evidence in the predecessor token that
+            // contradicts an empty namespace (i.e., the predecessor is NOT a
+            // known SDK namespace like "geoLocationManager", "wifiManager", etc.)
+            if (pathTokens.size() > methodTokenCount) {
+                int offset = pathTokens.size() - methodTokenCount;
+                // Check that the method tokens match
+                boolean methodMatches = true;
+                if (baseMethod.contains(".")) {
+                    String[] methodTokens = baseMethod.split("\\.");
+                    for (int i = 0; i < methodTokens.length; i++) {
+                        if (!methodTokens[i].equals(pathTokens.get(offset + i))) {
+                            methodMatches = false;
+                            break;
+                        }
+                    }
+                } else {
+                    methodMatches = baseMethod.equals(pathTokens.get(offset));
+                }
+                if (methodMatches) {
+                    // Check that the predecessor token is NOT a known privacy namespace
+                    // (if it is, the call likely belongs to that namespace, not here)
+                    if (offset > 0) {
+                        String predecessor = pathTokens.get(offset - 1);
+                        if (!NamespaceResolver.isKnownSdkNamespace(predecessor)) {
+                            return true;
+                        }
+                    }
+                }
+            }
+            return false;
         }
 
         int namespaceIndex = pathTokens.size() - methodTokenCount - 1;
