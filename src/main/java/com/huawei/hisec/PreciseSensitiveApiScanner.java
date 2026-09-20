@@ -85,7 +85,9 @@ public class PreciseSensitiveApiScanner {
             // Common method names that appear on many @bundle/@internal classes
             // and cause FPs when method-name-only fallback matches them to privacy APIs
             "getdata", "getthumbnail", "getthumbnailsync",
-            "checksysintegrity"
+            "checksysintegrity",
+            "requestimage", "requestimagedata",
+            "getalbums"
     );
 
     /**
@@ -305,15 +307,15 @@ public class PreciseSensitiveApiScanner {
                     UnifiedPrivacyReport.ApiUsage usage = convertArkTsHitToApiUsage(hit, targetDirectory, abcFile);
 
                     // Create dedup key from usage fields.
-                    // Include stmtIndex to prevent over-merging distinct IR statements
-                    // that share the same code text and declaringMethod (e.g., radio2.getOperatorNameSync
-                    // in if/else branches, or getUserAuthInstance in both branches of AuthUtil.onStart).
+                    // Key: code + declaringMethod + apiSignature + stmtIndex
+                    // - code + declaringMethod identifies the source-level call site
+                    // - apiSignature ensures duplicate rules (callback + Promise variants
+                    //   of the same API in privacy_apis.json) merge into one hit
+                    // - stmtIndex distinguishes distinct IR statements that may share
+                    //   the same code text (e.g., same statement in if/else branches)
                     String usageKey = (usage.code != null ? usage.code : "")
                             + "|" + (usage.declaringMethod != null ? usage.declaringMethod : "")
-                            + "|" + (usage.namespace != null ? usage.namespace : "")
-                            + "|" + (usage.method != null ? usage.method : "")
-                            + "|" + (usage.sourceKind != null ? usage.sourceKind : "")
-                            + "|" + (usage.category != null ? usage.category : "")
+                            + "|" + (usage.apiSignature != null ? usage.apiSignature : "")
                             + "|" + hit.stmtIndex;
 
                     if (seenUsageKeys.add(usageKey)) {
@@ -869,7 +871,7 @@ public class PreciseSensitiveApiScanner {
             // HiAnalyzer gives us the full path like account.appAccount.createAppAccountManager.getAllAccounts
             // We match this against indirect rules using suffix matching + alias mapping
             SensitiveApiHit indirectHit = matchDeterministicIndirect(
-                    stmt, info, fileName, functionName, indirectRules, "BODY_HIT", "API_MAP", importAliasMap, importedSdkModules
+                    stmt, info, fileName, functionName, indirectRules, "BODY_HIT", "API_MAP", importAliasMap, importedSdkModules, cg
             );
             if (indirectHit != null) {
                 results.add(indirectHit);
@@ -928,7 +930,7 @@ public class PreciseSensitiveApiScanner {
             if (isSsaPattern) {
                 // SSA phi pattern: try deterministic indirect match with cross-map dedup
                 SensitiveApiHit indirectChain = matchDeterministicIndirect(
-                        stmt, info, fileName, functionName, indirectRules, "CHAIN_EVIDENCE", "FIELD_MAP", importAliasMap, importedSdkModules
+                        stmt, info, fileName, functionName, indirectRules, "CHAIN_EVIDENCE", "FIELD_MAP", importAliasMap, importedSdkModules, cg
                 );
                 if (indirectChain != null) {
                     String fmKey = functionName + "|" + indirectChain.namespace + "|" + indirectChain.method;
@@ -950,7 +952,7 @@ public class PreciseSensitiveApiScanner {
 
             // Deterministic indirect match
             SensitiveApiHit indirectChain = matchDeterministicIndirect(
-                    stmt, info, fileName, functionName, indirectRules, "CHAIN_EVIDENCE", "FIELD_MAP", importAliasMap, importedSdkModules
+                    stmt, info, fileName, functionName, indirectRules, "CHAIN_EVIDENCE", "FIELD_MAP", importAliasMap, importedSdkModules, cg
             );
             if (indirectChain != null) {
                 results.add(indirectChain);
@@ -1054,32 +1056,48 @@ public class PreciseSensitiveApiScanner {
         Set<String> imported = new HashSet<>();
         try {
             for (var fc : hiFile.getForeignClasses()) {
-                String fromPath = fc.getFromPath();
-                if (fromPath != null && (fromPath.contains("@ohos:") || fromPath.contains("@kit:")
-                        || fromPath.startsWith("@ohos.") || fromPath.startsWith("@kit."))) {
-                    imported.add(fromPath.toLowerCase(Locale.ROOT));
-                }
+                String fromPath = normalizeImportPath(fc.getFromPath());
+                if (fromPath != null) imported.add(fromPath);
             }
         } catch (Throwable ignored) {}
         try {
             for (var ff : hiFile.getForeignFunctions()) {
-                String fromPath = ff.getFromPath();
-                if (fromPath != null && (fromPath.contains("@ohos:") || fromPath.contains("@kit:")
-                        || fromPath.startsWith("@ohos.") || fromPath.startsWith("@kit."))) {
-                    imported.add(fromPath.toLowerCase(Locale.ROOT));
-                }
+                String fromPath = normalizeImportPath(ff.getFromPath());
+                if (fromPath != null) imported.add(fromPath);
             }
         } catch (Throwable ignored) {}
         try {
             for (var ffield : hiFile.getForeignFields()) {
-                String fromPath = ffield.getFromPath();
-                if (fromPath != null && (fromPath.contains("@ohos:") || fromPath.contains("@kit:")
-                        || fromPath.startsWith("@ohos.") || fromPath.startsWith("@kit."))) {
-                    imported.add(fromPath.toLowerCase(Locale.ROOT));
-                }
+                String fromPath = normalizeImportPath(ffield.getFromPath());
+                if (fromPath != null) imported.add(fromPath);
             }
         } catch (Throwable ignored) {}
         return imported;
+    }
+
+    /**
+     * Normalizes an import path from HiAnalyzer's ForeignClasses/Functions/Fields
+     * to a canonical lowercase form suitable for matching against rule apiPackages.
+     *
+     * HiAnalyzer returns paths like "@system:@ohos:file.photoaccesshelper" — the
+     * "@system:" prefix is HiAnalyzer's internal classification, not part of the
+     * actual import path. We strip it and normalize to get "@ohos:file.photoaccesshelper".
+     *
+     * @param fromPath raw fromPath from HiAnalyzer
+     * @return normalized lowercase path, or null if not an SDK import
+     */
+    private String normalizeImportPath(String fromPath) {
+        if (fromPath == null) return null;
+        String s = fromPath;
+        // Strip @system: prefix (HiAnalyzer internal classification)
+        if (s.startsWith("@system:")) {
+            s = s.substring(8);
+        }
+        if (s.contains("@ohos:") || s.contains("@kit:")
+                || s.startsWith("@ohos.") || s.startsWith("@kit.")) {
+            return s.toLowerCase(Locale.ROOT);
+        }
+        return null;
     }
 
     /**
@@ -1184,7 +1202,8 @@ public class PreciseSensitiveApiScanner {
             String layer,
             String sourceKind,
             Map<String, String> importAliasMap,
-            Set<String> importedSdkModules
+            Set<String> importedSdkModules,
+            CallGraph cg
     ) {
         if (!info.valid || info.pathTokens == null || info.pathTokens.isEmpty()) {
             return null;
@@ -1192,6 +1211,19 @@ public class PreciseSensitiveApiScanner {
 
         String stmtText = safe(stmt);
         boolean assignmentLike = stmtText != null && stmtText.contains("=");
+
+        // Extract Andersen PTA from CallGraph for base variable type checking.
+        // Used in the @bundle method-only fallback to reject FPs where an
+        // app-internal class has a method name that coincidentally matches
+        // a privacy API rule (e.g., app's getAlbums vs PhotoAccessHelper.getAlbums).
+        Andersen andersen = null;
+        if (cg != null) {
+            try {
+                andersen = (Andersen) cg.getPta();
+            } catch (Throwable ignored) {
+                // PTA not available, proceed without base type checking
+            }
+        }
 
         SensitiveApiHit bestHit = null;
         int bestScore = Integer.MIN_VALUE;
@@ -1211,6 +1243,10 @@ public class PreciseSensitiveApiScanner {
                 continue;
             }
             String pathNamespace = info.pathTokens.get(namespaceIndex);
+
+            // Pre-compute rule argument specificity (used in multiple gates below)
+            String ruleExpectedArg = extractMethodArgument(item.rule.method);
+            boolean hasSpecificArgs = ruleExpectedArg != null;
 
             boolean nsMatch = false;
             // Direct match
@@ -1248,20 +1284,36 @@ public class PreciseSensitiveApiScanner {
             // FPs like UserAuthInstance.start matching timer/player .start() calls.
             // EXCEPTION: allow fuzzy match when the rule has parenthesized arguments
             // (e.g., on('locationChange')), which provide extra specificity.
-            String ruleExpectedArg = extractMethodArgument(item.rule.method);
-            boolean hasSpecificArgs = ruleExpectedArg != null;
             if (!nsMatch && item.rule.namespace != null && !item.rule.namespace.isEmpty()
                     && (!GENERIC_METHOD_BLACKLIST.contains(baseMethod.toLowerCase(Locale.ROOT))
                         || hasSpecificArgs)) {
                 String nsLower = item.rule.namespace.toLowerCase(Locale.ROOT);
                 String pathNsLower = pathNamespace != null ? pathNamespace.toLowerCase(Locale.ROOT) : "";
-                if (pathNsLower.contains(nsLower) || nsLower.contains(pathNsLower)) {
+                // Fuzzy substring match: only when pathNamespace is non-empty and
+                // has meaningful length (>= 3 chars). Empty/short pathNamespaces
+                // would trivially match any rule namespace via nsLower.contains(""),
+                // causing FPs like Map.set("sdkApiVersion", 0) matching deviceinfo.sdkApiVersion.
+                if (pathNsLower.length() >= 3
+                        && (pathNsLower.contains(nsLower) || nsLower.contains(pathNsLower))) {
                     nsMatch = true;
                 }
-                // Also check all path tokens for namespace substring
-                if (!nsMatch) {
+                // Also check all path tokens for namespace substring — but ONLY for
+                // @bundle/@internal paths. For FIELD_MAP (where sourcePrefix is typically
+                // an import path like @ohos.deviceInfo), checking all tokens would match
+                // any statement in a file that imports the SDK module, even if the
+                // receiver variable is unrelated (e.g., Map.set("sdkApiVersion", 0)
+                // in a file that also imports @ohos.deviceInfo).
+                // IMPORTANT: require the token to END with the rule namespace (not just
+                // contain it), to prevent class names like "DeviceInfoPlusOhosPlugin"
+                // from matching the rule namespace "deviceinfo" — the plugin class is
+                // NOT the same as the @ohos.deviceInfo SDK module.
+                if (!nsMatch && ("@bundle".equals(info.sourcePrefix)
+                        || "@internal".equals(info.sourcePrefix))) {
                     for (String token : info.pathTokens) {
-                        if (token != null && token.toLowerCase(Locale.ROOT).contains(nsLower)) {
+                        if (token == null) continue;
+                        String tokLower = token.toLowerCase(Locale.ROOT);
+                        if (tokLower.equals(nsLower) || tokLower.endsWith("." + nsLower)
+                                || tokLower.endsWith(":" + nsLower)) {
                             nsMatch = true;
                             break;
                         }
@@ -1290,7 +1342,53 @@ public class PreciseSensitiveApiScanner {
             if (!nsMatch && "@bundle".equals(info.sourcePrefix)) {
                 if (!GENERIC_METHOD_BLACKLIST.contains(baseMethod.toLowerCase(Locale.ROOT))
                         && isRuleModuleImported(item, importedSdkModules)) {
-                    nsMatch = true;
+                    // PTA base-type gate: verify the call's base variable actually
+                    // points to a type compatible with the rule's namespace.
+                    // Without this, any app-internal class with a method name that
+                    // coincidentally matches a privacy API (e.g., getAlbums) would
+                    // be falsely accepted as long as the SDK module is imported.
+                    // When PTA identifies the base as an app-internal class that
+                    // contradicts the rule's namespace, reject the match.
+                    boolean ptaContradicts = false;
+                    if (andersen != null) {
+                        try {
+                            Set<String> baseCandidates =
+                                    NamespaceResolver.inferNamespaceCandidatesFromCallBase(
+                                            stmt, andersen, cg);
+                            if (!baseCandidates.isEmpty()
+                                    && NamespaceResolver.isNamespaceContradicted(
+                                            baseCandidates, item.rule.namespace)) {
+                                ptaContradicts = true;
+                            }
+                        } catch (Throwable ignored) {
+                            // PTA query failed, don't block the match
+                        }
+                    }
+                    if (!ptaContradicts) {
+                        nsMatch = true;
+                    }
+                } else if (GENERIC_METHOD_BLACKLIST.contains(baseMethod.toLowerCase(Locale.ROOT))
+                        && isRuleModuleImported(item, importedSdkModules)
+                        && andersen != null) {
+                    // For blacklisted method names on @bundle path, require PTA
+                    // confirmation: only accept if PTA resolves the base variable
+                    // to a type compatible with the rule's namespace (non-empty
+                    // and not contradicted). This prevents FPs where any app-internal
+                    // class with a coincidentally-matching method name (e.g.,
+                    // getAlbums) is falsely accepted, while still allowing real TPs
+                    // where PTA can confirm the receiver is the correct SDK type.
+                    try {
+                        Set<String> baseCandidates =
+                                NamespaceResolver.inferNamespaceCandidatesFromCallBase(
+                                        stmt, andersen, cg);
+                        if (!baseCandidates.isEmpty()
+                                && !NamespaceResolver.isNamespaceContradicted(
+                                        baseCandidates, item.rule.namespace)) {
+                            nsMatch = true;
+                        }
+                    } catch (Throwable ignored) {
+                        // PTA query failed, don't accept blacklisted method
+                    }
                 }
             }
             if (!nsMatch && "@internal".equals(info.sourcePrefix)) {
@@ -1301,6 +1399,29 @@ public class PreciseSensitiveApiScanner {
                     // even for @internal to prevent FPs where HiAnalyzer maps timer/player
                     // .start() calls to @internal:...UserAuthInstance.start
                     nsMatch = true;
+                }
+            }
+
+            // Unified PTA gate for generic method names: regardless of which path set
+            // nsMatch=true, if the method is in GENERIC_METHOD_BLACKLIST and has no
+            // specific arguments, verify via PTA that the call base type is compatible
+            // with the rule's namespace. This catches FPs where HiAnalyzer's API_MAP
+            // misidentifies an app-internal class (e.g., chart.getData()) as a privacy
+            // API class (e.g., SystemPasteboard.getData).
+            if (nsMatch
+                    && GENERIC_METHOD_BLACKLIST.contains(baseMethod.toLowerCase(Locale.ROOT))
+                    && !hasSpecificArgs
+                    && andersen != null) {
+                try {
+                    Set<String> baseCandidates =
+                            NamespaceResolver.inferNamespaceCandidatesFromCallBase(
+                                    stmt, andersen, cg);
+                    if (!baseCandidates.isEmpty()
+                            && NamespaceResolver.isNamespaceContradicted(
+                                    baseCandidates, item.rule.namespace)) {
+                        nsMatch = false;
+                    }
+                } catch (Throwable ignored) {
                 }
             }
 
@@ -1941,20 +2062,29 @@ public class PreciseSensitiveApiScanner {
             }
         }
 
-        // Strategy 2: Def-use backtracking on function body
-        // Walk backwards from the call stmt to find how each Local argument was assigned.
+        // Strategy 2: Def-use backtracking on function body — trace FIRST argument only.
+        // Walk backwards from the call stmt to find how the first Local argument was assigned.
         // This resolves:
         //   - StringConstant assignments: v9 = "locationError"; v6 = v9; → arg="locationError"
         //   - Enum field access chains: v8 = v8.<SensorId>; v8 = v8.<ACCELEROMETER>; v6 = v8; → arg="ACCELEROMETER"
         //   - Enum field access: v6 = v8.<HEART_RATE>; → arg="HEART_RATE"
         Set<String> resolvedArgValues = resolveCallArgumentsViaDefUse(stmt);
-        for (String val : resolvedArgValues) {
-            if (argumentMatchesPattern(val, expectedArg)) {
-                return true;
+        if (!resolvedArgValues.isEmpty()) {
+            // Strategy 2 resolved the first argument — trust this result.
+            // If it doesn't match, the argument is a different value (e.g., "locationError"
+            // vs expected "locationChange"), so we should NOT fall through to Strategies 3/4
+            // which could pick up values from other call sites in the same function.
+            for (String val : resolvedArgValues) {
+                if (argumentMatchesPattern(val, expectedArg)) {
+                    return true;
+                }
             }
+            return false;
         }
 
         // Strategy 3: Fallback - check stmtText for the expected argument pattern
+        // Only reached when Strategy 2 could NOT resolve the first argument (e.g., the
+        // argument is not a Local variable, or its def-use chain couldn't be traced).
         String argTail = expectedArg.contains(".") ? expectedArg.substring(expectedArg.lastIndexOf('.') + 1) : expectedArg;
         if (stmtText == null) return false;
         if (stmtText.contains(expectedArg)) return true;
@@ -1962,6 +2092,7 @@ public class PreciseSensitiveApiScanner {
 
         // Strategy 4: Check preceding statements in the function body for enum field access
         // patterns like v8.<ACCELEROMETER> that match the expected argument tail
+        // Only reached when Strategy 2 failed to resolve AND Strategy 3 didn't match.
         if (argTail.length() >= 3) {
             Set<String> bodyArgValues = resolveEnumAccessFromFunctionBody(stmt, argTail);
             for (String val : bodyArgValues) {
@@ -1998,11 +2129,16 @@ public class PreciseSensitiveApiScanner {
             var argList = callExpr.getArgList();
             if (argList == null) return resolved;
 
-            // Collect Local argument names to trace
+            // Collect Local argument names to trace, preserving order for per-arg tracking
+            List<String> argLocalNameList = new ArrayList<>();
             Set<String> argLocalNames = new HashSet<>();
             for (Object arg : argList) {
                 if (arg instanceof com.huawei.hianalyzer.ir.value.Local) {
-                    argLocalNames.add(((com.huawei.hianalyzer.ir.value.Local) arg).getName());
+                    String name = ((com.huawei.hianalyzer.ir.value.Local) arg).getName();
+                    if (name != null && !argLocalNames.contains(name)) {
+                        argLocalNames.add(name);
+                        argLocalNameList.add(name);
+                    }
                 }
             }
 
@@ -2018,15 +2154,16 @@ public class PreciseSensitiveApiScanner {
                     String argsStr = callText.substring(parenStart + 1, parenEnd);
                     for (String token : argsStr.split(",")) {
                         token = token.trim();
-                        if (token.matches("v\\d+")) {
+                        if (token.matches("v\\d+") && !argLocalNames.contains(token)) {
                             argLocalNames.add(token);
+                            argLocalNameList.add(token);
                         }
                     }
                 }
             }
             if (argLocalNames.isEmpty()) return resolved;
 
-            // Get the function body and walk backwards
+            // Get the function body
             HiFunction func = ScannerUtils.safeGetHiFunction(callStmt);
             if (func == null) return resolved;
             com.huawei.hianalyzer.ir.Body body = func.getBody();
@@ -2044,44 +2181,43 @@ public class PreciseSensitiveApiScanner {
             }
             if (callIdx < 0) return resolved;
 
-            // Walk backwards up to 30 statements to find the NEAREST assignment for each argument variable.
-            // We track which variables have been resolved and stop tracking them once found,
-            // so that variable reuse across sequential calls doesn't pick up stale values.
-            int lookBack = Math.min(30, callIdx);
-            Set<String> resolvedVars = new HashSet<>(); // vars already resolved
-            for (int i = callIdx - 1; i >= callIdx - lookBack; i--) {
-                String s = stmts.get(i) != null ? stmts.get(i).toString() : null;
-                if (s == null) continue;
-
-                // Pattern 1: vN = "stringConstant"
-                java.util.regex.Matcher strMatcher = STRING_ASSIGN_PATTERN.matcher(s);
-                if (strMatcher.find()) {
-                    String varName = strMatcher.group(1);
-                    String value = strMatcher.group(2);
-                    if (resolvedVars.contains(varName)) continue; // already found newer assignment
-                    if (argLocalNames.contains(varName)) {
-                        resolved.add(value);
-                        resolvedVars.add(varName);
-                    } else if (isReachableViaCopy(argLocalNames, varName, stmts, callIdx, i)) {
-                        resolved.add(value);
-                        resolvedVars.add(varName);
+            // Only trace the FIRST argument — the expected pattern (e.g., 'locationChange')
+            // is always the first parameter to methods like on(), off(), subscribe().
+            // Tracing ALL arguments causes FP when a later argument's def-use chain
+            // happens to resolve to the expected value from a different code path.
+            // Example FP: on("locationError", callback) matches rule on('locationChange')
+            // because the callback variable's def-use chain reaches "locationChange"
+            // from an earlier on("locationChange", ...) call in the same function.
+            //
+            // Parse the first argument variable name directly from the call text
+            // (not from argLocalNameList) because:
+            // 1. Local.getName() may return truncated names (e.g., "v" instead of "v6")
+            // 2. argList may include the receiver object as the first element
+            // The call text format is: "vN = VirtualCall: vM.<method>(v1, v2, ...)"
+            // so the first token inside parentheses is the first actual argument.
+            String firstArgVar = null;
+            if (callText != null) {
+                int parenStart = callText.indexOf('(');
+                int parenEnd = callText.lastIndexOf(')');
+                if (parenStart >= 0 && parenEnd > parenStart) {
+                    String argsStr = callText.substring(parenStart + 1, parenEnd);
+                    String[] tokens = argsStr.split(",");
+                    if (tokens.length > 0) {
+                        String firstToken = tokens[0].trim();
+                        if (firstToken.matches("v\\d+")) {
+                            firstArgVar = firstToken;
+                        }
                     }
                 }
-
-                // Pattern 2: vN = vM.<ENUM_VALUE>
-                java.util.regex.Matcher enumMatcher = ENUM_ASSIGN_PATTERN.matcher(s);
-                if (enumMatcher.find()) {
-                    String varName = enumMatcher.group(1);
-                    String fieldAccess = enumMatcher.group(2);
-                    if (resolvedVars.contains(varName)) continue; // already found newer assignment
-                    if (argLocalNames.contains(varName)) {
-                        resolved.add(fieldAccess);
-                        resolvedVars.add(varName);
-                    } else if (isReachableViaCopy(argLocalNames, varName, stmts, callIdx, i)) {
-                        resolved.add(fieldAccess);
-                        resolvedVars.add(varName);
-                    }
-                }
+            }
+            // Fallback: if call text parsing fails, use argLocalNameList
+            if (firstArgVar == null && !argLocalNameList.isEmpty()) {
+                firstArgVar = argLocalNameList.get(0);
+            }
+            int lookBack = Math.min(50, callIdx);
+            if (firstArgVar != null) {
+                Set<String> argResolved = traceVariableDefUse(firstArgVar, stmts, callIdx, lookBack, 0);
+                resolved.addAll(argResolved);
             }
         } catch (Throwable ignored) {
             // Non-fatal: just return what we have
@@ -2124,6 +2260,65 @@ public class PreciseSensitiveApiScanner {
     /** Pattern for: vN = vM (simple copy) */
     private static final java.util.regex.Pattern COPY_PATTERN =
             java.util.regex.Pattern.compile("(v\\d+)\\s*=\\s*(v\\d+)\\s*$");
+
+    /**
+     * Recursively traces the def-use chain of a variable backwards from the call site.
+     *
+     * For each argument variable, finds its most recent assignment before the call.
+     * If that assignment is a string constant or enum field access, returns the value.
+     * If it's a copy (vN = vM), recursively traces vM's most recent assignment before
+     * the copy point. This correctly handles variable reuse in SSA-untransformed IR:
+     *
+     *   [91] v5 = "locationChange"     ← v5's 1st assignment
+     *   [92] v2 = v5                    ← v2 gets "locationChange"
+     *   [103] v5 = <HIGH_POWER_CONSUMPTION>  ← v5's 2nd assignment (reuse!)
+     *   [108] call(v2, v3, v4)          ← v2 should resolve to "locationChange"
+     *
+     * @param varName   The variable to trace (e.g., "v2")
+     * @param stmts     The function body statements
+     * @param beforeIdx Trace assignments before this index (exclusive)
+     * @param maxLookBack Maximum statements to look back
+     * @param depth     Recursion depth (max 3 to prevent infinite loops)
+     * @return Set of resolved string/enum values for this variable
+     */
+    private Set<String> traceVariableDefUse(String varName, List<Stmt> stmts,
+                                            int beforeIdx, int maxLookBack, int depth) {
+        Set<String> resolved = new HashSet<>();
+        if (depth > 3 || varName == null) return resolved;
+
+        int start = Math.max(0, beforeIdx - maxLookBack);
+        // Find the NEAREST assignment to varName before beforeIdx
+        for (int i = beforeIdx - 1; i >= start; i--) {
+            String s = stmts.get(i) != null ? stmts.get(i).toString() : null;
+            if (s == null) continue;
+
+            // Check if this statement assigns to varName
+            // Pattern: varName = "string"
+            java.util.regex.Matcher strMatcher = STRING_ASSIGN_PATTERN.matcher(s);
+            if (strMatcher.find() && strMatcher.group(1).equals(varName)) {
+                resolved.add(strMatcher.group(2));
+                return resolved;
+            }
+
+            // Pattern: varName = vM.<ENUM_VALUE>
+            java.util.regex.Matcher enumMatcher = ENUM_ASSIGN_PATTERN.matcher(s);
+            if (enumMatcher.find() && enumMatcher.group(1).equals(varName)) {
+                resolved.add(enumMatcher.group(2));
+                return resolved;
+            }
+
+            // Pattern: varName = vM (copy)
+            java.util.regex.Matcher copyMatcher = COPY_PATTERN.matcher(s);
+            if (copyMatcher.find() && copyMatcher.group(1).equals(varName)) {
+                String srcVar = copyMatcher.group(2);
+                // Recursively trace the source variable, looking back from the copy point
+                Set<String> srcResolved = traceVariableDefUse(srcVar, stmts, i, maxLookBack, depth + 1);
+                resolved.addAll(srcResolved);
+                return resolved;
+            }
+        }
+        return resolved;
+    }
 
     /**
      * Scans the function body for enum field access patterns that match the expected argument tail.

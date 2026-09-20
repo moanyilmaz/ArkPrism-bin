@@ -101,8 +101,9 @@ public class NamespaceResolver {
             Map.entry("@kit.CalendarKit", List.of("@ohos.calendarManager")),
             Map.entry("@ohos.calendarManager", List.of("@kit.CalendarKit", "Calendar")),
             Map.entry("Calendar", List.of("@ohos.calendarManager", "@kit.CalendarKit")),
-            Map.entry("@kit.MediaLibraryKit", List.of("@ohos.multimedia.photoAccessHelper")),
-            Map.entry("@ohos.multimedia.photoAccessHelper", List.of("@kit.MediaLibraryKit", "PhotoAccessHelper", "photoAccessHelper", "Album", "AbsAlbum", "PhotoAsset"))
+            Map.entry("@kit.MediaLibraryKit", List.of("@ohos.multimedia.photoAccessHelper", "@ohos:file.photoAccessHelper", "@ohos.file.photoAccessHelper")),
+            Map.entry("@ohos.multimedia.photoAccessHelper", List.of("@kit.MediaLibraryKit", "PhotoAccessHelper", "photoAccessHelper", "Album", "AbsAlbum", "PhotoAsset")),
+            Map.entry("@ohos.file.photoAccessHelper", List.of("@kit.MediaLibraryKit", "PhotoAccessHelper", "photoAccessHelper", "Album", "AbsAlbum", "PhotoAsset"))
     );
 
     // ======================================================
