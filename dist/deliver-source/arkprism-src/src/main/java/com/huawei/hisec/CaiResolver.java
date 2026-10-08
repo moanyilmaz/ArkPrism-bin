@@ -38,26 +38,32 @@ public class CaiResolver {
     /** Conflict penalty factor. Evidence pointing to an incompatible namespace
      *  subtracts gamma * weight from the candidate's score.
      *  Score(c,a) = Σ w_e(support) - γ * Σ w_e(conflict) */
-    public static double CONFLICT_PENALTY_GAMMA = 0.5;
+    public static double CONFLICT_PENALTY_GAMMA = getDoubleProperty(
+            "arkprism.cair.gamma", 0.5);
 
     /** Penalty for a call site whose assigned namespace differs from the
      *  component's majority namespace. Allows outlier sites with a penalty
      *  instead of forcing incorrect namespace assignment.
      *  Objective: max Σ Score(c,a_c) - λ * Σ o_c
      *  Soft-alias edges are logged for diagnostics but do not affect the objective. */
-    public static double CONSISTENCY_PENALTY_LAMBDA = 1.0;
+    public static double CONSISTENCY_PENALTY_LAMBDA = getDoubleProperty(
+            "arkprism.cair.lambda", 1.0);
 
-    /** When true, forces all call sites into singleton components (no joint solving),
-     *  while still extracting PTA evidence. This implements true per-site resolution
-     *  with all evidence kinds, as opposed to λ=0 which still performs component
-     *  grouping without the outlier penalty. */
-    public static boolean FORCE_SINGLETON_COMPONENTS = false;
+    /**
+     * Experimental selective-binding mode. It treats the catalog as open-world:
+     * rule multiplicity is not evidence, and unsupported single-candidate matches
+     * abstain instead of being forced to a known SDK namespace.
+     */
+    public static final boolean RISK_CONTROL = Boolean.parseBoolean(
+            System.getProperty("arkprism.cair.riskControl", "false"));
 
-    /** When true, replaces joint enumeration with component-majority voting:
-     *  each site picks its local top-1, then the component label is the majority
-     *  namespace. Sites without that namespace candidate keep their local top-1
-     *  (fallback variant). No outlier mechanism is used. */
-    public static boolean MAJORITY_VOTE_MODE = false;
+    /** Interpret producer methods in official @system paths as typed factory evidence. */
+    public static final boolean ROLE_AWARE_EVIDENCE = Boolean.parseBoolean(
+            System.getProperty("arkprism.cair.roleAwareEvidence", "false"));
+
+    /** Role semantics source: legacy, generated, hybrid, or off. */
+    public static final String FACTORY_ROLE_SOURCE = System.getProperty(
+            "arkprism.cair.factoryRoleSource", "legacy").trim().toLowerCase(Locale.ROOT);
 
     // ======================================================
     // Data Structures
@@ -69,6 +75,7 @@ public class CaiResolver {
         STATIC_TYPE(0.8),     // Declared type from Local.getType()
         FACTORY_RETURN(0.7),  // Factory method return type via FunctionRef
         FACTORY_MAP(0.6),     // Hardcoded factory method → namespace map
+        FACTORY_CHAIN(1.1),   // Producer role in an official @system resolved path
         ROOT_QUALIFIER(0.5),  // Root qualifier from resolved name parsing
         PATH_TOKEN(0.4),      // Namespace token in path (e.g., "audio" in "audio.getAudioManager")
         VARIABLE_NAME(0.3);   // Variable name heuristic (e.g., audioManager → audio)
@@ -105,6 +112,8 @@ public class CaiResolver {
         public final String resolvedFullName;// Full resolved API name from HiAnalyzer
         public final PreciseSensitiveApiScanner.ResolvedNameInfo nameInfo;
         public final List<NamespaceEvidence> evidence = new ArrayList<>();
+        public final List<SdkFactoryVersionGate.Decision> factoryGateAudit =
+                new ArrayList<>();
         public final String fileName;
         public final String functionName;
         public final String stmtText;  // Cached for argument-sensitive matching
@@ -279,8 +288,16 @@ public class CaiResolver {
             extractVariableNameEvidence(site);
         }
 
+        if (ROLE_AWARE_EVIDENCE) {
+            extractResolvedFactoryChainEvidence(site);
+        }
+
         // Evidence 5 & 6: ROOT_QUALIFIER / PATH_TOKEN — From resolved name
         extractPathBasedEvidence(site);
+
+        // Experiment-only leave-one-evidence-out support. The default is empty,
+        // so production behavior is unchanged.
+        site.evidence.removeIf(ev -> isEvidenceDisabled(ev.kind));
     }
 
     private static void extractPtaClassEvidence(CallSiteInfo site, Andersen andersen) {
@@ -401,6 +418,88 @@ public class CaiResolver {
      */
     private static String lookupFactoryMethodNamespaceMap(String methodNameLower) {
         return NamespaceResolver.FACTORY_METHOD_NAMESPACE_MAP.get(methodNameLower);
+    }
+
+    /**
+     * Recovers the receiver role encoded by HiAnalyzer's official system path.
+     * For example, createHttp is a producer of HttpRequest and
+     * getSystemPasteboard is a producer of SystemPasteboard/pasteboard.
+     */
+    private static void extractResolvedFactoryChainEvidence(CallSiteInfo site) {
+        if (site == null || site.resolvedFullName == null
+                || !site.resolvedFullName.startsWith("@system:")
+                || site.nameInfo == null || !site.nameInfo.valid) {
+            return;
+        }
+
+        List<String> emittedNamespaces = new ArrayList<>();
+        List<String> tokens = site.nameInfo.pathTokens;
+        if (usesGeneratedFactoryRoles()) {
+            SdkFactoryGraph.RoleResolution graphResolution =
+                    SdkFactoryGraph.resolveRolePathAudited(
+                            site.resolvedFullName, tokens);
+            site.factoryGateAudit.addAll(graphResolution.gateAudit);
+            for (SdkFactoryGraph.Resolution resolution
+                    : graphResolution.resolutions) {
+                addFactoryChainEvidence(
+                        site, resolution.productType, resolution.detail, emittedNamespaces);
+            }
+        }
+
+        if (usesLegacyFactoryRoles()) {
+            int producerLimit = Math.max(0, tokens.size() - 1);
+            for (int i = 0; i < producerLimit; i++) {
+                String token = NamePathMatcher.stripMethodArguments(tokens.get(i));
+                if (token == null || token.isBlank()) continue;
+                String namespace = resolveLegacyFactoryProducerNamespace(
+                        token.toLowerCase(Locale.ROOT));
+                if (namespace == null) continue;
+                addFactoryChainEvidence(
+                        site,
+                        namespace,
+                        "legacy-system-producer[" + i + "]: " + token,
+                        emittedNamespaces);
+            }
+        }
+    }
+
+    private static void addFactoryChainEvidence(
+            CallSiteInfo site,
+            String namespace,
+            String detail,
+            List<String> emittedNamespaces) {
+        if (namespace == null || namespace.isBlank()) return;
+        for (String existing : emittedNamespaces) {
+            if (isNamespaceCompatible(namespace, getCompatibleNamespaces(existing))) return;
+        }
+        emittedNamespaces.add(namespace);
+        site.evidence.add(new NamespaceEvidence(
+                EvidenceKind.FACTORY_CHAIN, namespace, detail));
+    }
+
+    private static boolean usesGeneratedFactoryRoles() {
+        return "generated".equals(FACTORY_ROLE_SOURCE)
+                || "hybrid".equals(FACTORY_ROLE_SOURCE);
+    }
+
+    private static boolean usesLegacyFactoryRoles() {
+        return "legacy".equals(FACTORY_ROLE_SOURCE)
+                || "hybrid".equals(FACTORY_ROLE_SOURCE);
+    }
+
+    private static String resolveLegacyFactoryProducerNamespace(String methodNameLower) {
+        switch (methodNameLower) {
+            case "createhttp":
+                return "HttpRequest";
+            case "getphotoaccesshelper":
+                return "PhotoAccessHelper";
+            case "getaccountmanager":
+                return "osAccount";
+            case "createdevicemanager":
+                return "DeviceManager";
+            default:
+                return NamespaceResolver.FACTORY_METHOD_NAMESPACE_MAP.get(methodNameLower);
+        }
     }
 
     private static void extractVariableNameEvidence(CallSiteInfo site) {
@@ -525,7 +624,7 @@ public class CaiResolver {
         UnionFind uf = new UnionFind();
         List<SoftAliasEdge> softEdges = new ArrayList<>();
 
-        if (!FORCE_SINGLETON_COMPONENTS && andersen != null && sitesWithReceiver.size() > 1) {
+        if (andersen != null && sitesWithReceiver.size() > 1) {
             // Pre-compute points-to class names for all receivers to avoid
             // redundant PTA queries in the O(n²) pairwise comparison loop
             Map<Local, Set<String>> receiverPtClasses = new LinkedHashMap<>();
@@ -651,6 +750,12 @@ public class CaiResolver {
             // This is the sum of supporting evidence weights, before subtracting γ * conflictScore.
             double rawSupportScore = computeSupportScore(site.evidence, item.rule.namespace);
 
+            // Prefer the reviewed overload or module when those facts remain visible
+            // in bytecode. These are tie-breakers and never become mandatory evidence.
+            double reviewedEvidenceScore = reviewedRuleEvidenceScore(site, item);
+            score += reviewedEvidenceScore;
+            rawSupportScore += Math.max(0.0, reviewedEvidenceScore);
+
             // Also check path-based matching
             boolean pathMatch = false;
             if (site.nameInfo != null && site.nameInfo.valid) {
@@ -662,6 +767,9 @@ public class CaiResolver {
             }
 
             // Accept candidate if:
+            // 0. Open-world risk control is enabled. In that mode every method-compatible
+            //    rule must remain visible to the scorer; catalog growth must not turn a
+            //    formerly unique method into an empty candidate set.
             // 1. Path-based match succeeds (high confidence), OR
             // 2. Evidence score > 0 (some namespace evidence supports this rule), OR
             // 3. Method is unique to a single canonical namespace
@@ -670,7 +778,7 @@ public class CaiResolver {
             //     the same approach as the old matchIndirectCall heuristic which
             //     only blocks when there is NO namespace evidence at all)
             boolean methodUnique = NamespaceResolver.isMethodUniqueToNamespace(baseMethod, indirectRules);
-            if (pathMatch || score > 0 || methodUnique) {
+            if (RISK_CONTROL || pathMatch || score > 0 || methodUnique) {
                 CandidateApi cand = new CandidateApi(
                         item.rule.namespace, ruleMethod, item, score);
                 // Save raw support score (evidence sum only, no conflict penalty) for MIN_CONFIDENCE check
@@ -703,9 +811,8 @@ public class CaiResolver {
     static double computeNamespaceScore(List<NamespaceEvidence> evidence, String targetNamespace) {
         double supportScore = 0;
         double conflictScore = 0;
-        Set<String> compatible = getCompatibleNamespaces(targetNamespace);
         for (NamespaceEvidence ev : evidence) {
-            if (isNamespaceCompatible(ev.namespace, compatible)) {
+            if (evidenceSupportsNamespace(ev, targetNamespace)) {
                 supportScore += ev.weight;
             } else if (ev.namespace != null && !ev.namespace.isEmpty()) {
                 // Evidence points to a different, incompatible namespace.
@@ -725,13 +832,22 @@ public class CaiResolver {
      */
     static double computeSupportScore(List<NamespaceEvidence> evidence, String targetNamespace) {
         double supportScore = 0;
-        Set<String> compatible = getCompatibleNamespaces(targetNamespace);
         for (NamespaceEvidence ev : evidence) {
-            if (isNamespaceCompatible(ev.namespace, compatible)) {
+            if (evidenceSupportsNamespace(ev, targetNamespace)) {
                 supportScore += ev.weight;
             }
         }
         return supportScore;
+    }
+
+    static boolean evidenceSupportsNamespace(NamespaceEvidence evidence, String targetNamespace) {
+        if (evidence == null) return false;
+        if (evidence.kind == EvidenceKind.FACTORY_CHAIN
+                && evidence.detail != null
+                && evidence.detail.startsWith("sdk-graph[")) {
+            return SdkFactoryGraph.productSupportsRule(evidence.namespace, targetNamespace);
+        }
+        return isNamespaceCompatible(evidence.namespace, getCompatibleNamespaces(targetNamespace));
     }
 
     /** Gets all namespaces compatible with the target (itself + aliases). */
@@ -739,6 +855,7 @@ public class CaiResolver {
         Set<String> compatible = new HashSet<>();
         if (namespace == null || namespace.isEmpty()) return compatible;
         compatible.add(namespace.toLowerCase(Locale.ROOT));
+        compatible.addAll(SdkFactoryGraph.directAliasesForRuleNamespace(namespace));
         // Add PACKAGE_ALIASES
         List<String> aliases = NamespaceResolver.getRulePackagesForImport(namespace);
         for (String alias : aliases) {
@@ -826,10 +943,6 @@ public class CaiResolver {
             if (comp.callSites.size() == 1) {
                 // Singleton: pick the best candidate
                 solveSingleton(comp, siteCandidates);
-            } else if (MAJORITY_VOTE_MODE) {
-                // Component-majority voting: each site picks local top-1,
-                // then component label = majority namespace (fallback variant)
-                solveByMajorityVote(comp, siteCandidates);
             } else {
                 // Component-label aggregation: O(K * N * C) — always tractable
                 solveByEnumeration(comp, siteCandidates, allNamespaces);
@@ -970,82 +1083,6 @@ public class CaiResolver {
         }
     }
 
-    /**
-     * Component-majority voting baseline (fallback variant).
-     * 1. Each site picks its local top-1 candidate (same scoring as CAIR).
-     * 2. The component label is the majority namespace by site count.
-     * 3. Sites that have a candidate matching the majority label are reassigned to it.
-     * 4. Sites without a matching candidate keep their local top-1.
-     * No outlier mechanism is used.
-     */
-    private static void solveByMajorityVote(
-            AliasComponent comp,
-            List<List<CandidateApi>> siteCandidates) {
-        // Step 1: Each site picks local top-1
-        String[] localTop1Ns = new String[comp.callSites.size()];
-        CandidateApi[] localTop1Cand = new CandidateApi[comp.callSites.size()];
-        for (int i = 0; i < comp.callSites.size(); i++) {
-            List<CandidateApi> cands = siteCandidates.get(i);
-            if (cands.isEmpty()) {
-                localTop1Ns[i] = null;
-                localTop1Cand[i] = null;
-            } else {
-                localTop1Cand[i] = cands.get(0); // already sorted by score desc
-                localTop1Ns[i] = cands.get(0).namespace;
-            }
-        }
-
-        // Step 2: Count votes per canonical namespace
-        Map<String, Integer> voteCount = new LinkedHashMap<>();
-        for (String ns : localTop1Ns) {
-            if (ns != null) {
-                String canonical = getCanonicalNamespaceKey(ns);
-                voteCount.merge(canonical, 1, Integer::sum);
-            }
-        }
-
-        // Step 3: Pick majority namespace (ties: alphabetical)
-        String majorityCanonical = null;
-        int majorityCount = 0;
-        for (Map.Entry<String, Integer> e : voteCount.entrySet()) {
-            if (e.getValue() > majorityCount ||
-                (e.getValue() == majorityCount && (majorityCanonical == null || e.getKey().compareTo(majorityCanonical) < 0))) {
-                majorityCanonical = e.getKey();
-                majorityCount = e.getValue();
-            }
-        }
-
-        comp.selectedNamespace = majorityCanonical;
-
-        // Step 4: Assign each site
-        for (int i = 0; i < comp.callSites.size(); i++) {
-            CallSiteInfo site = comp.callSites.get(i);
-            List<CandidateApi> cands = siteCandidates.get(i);
-
-            if (cands.isEmpty()) continue;
-
-            // Find best candidate matching majority canonical namespace
-            CandidateApi majorityCand = null;
-            for (CandidateApi c : cands) {
-                if (getCanonicalNamespaceKey(c.namespace).equals(majorityCanonical)) {
-                    majorityCand = c;
-                    break;
-                }
-            }
-
-            // Fallback variant: if no matching candidate, keep local top-1
-            if (majorityCand != null) {
-                site.assignedCandidate = majorityCand;
-                site.isOutlier = false;
-                site.componentNamespace = majorityCanonical;
-            } else {
-                site.assignedCandidate = localTop1Cand[i];
-                site.isOutlier = true; // differs from component majority
-                site.componentNamespace = majorityCanonical;
-            }
-        }
-    }
-
     // ======================================================
     // Phase 5: Ambiguity-Aware Abstention
     // ======================================================
@@ -1084,12 +1121,11 @@ public class CaiResolver {
                 Set<String> candidateCompatible = getCompatibleNamespaces(result.bestCandidate.namespace);
                 hasStrongEvidence = isNamespaceCompatible(strongNs, candidateCompatible);
             }
-            boolean hasAnyEvidence = !result.callSite.evidence.isEmpty();
             String strippedMethod = NamePathMatcher.stripMethodArguments(result.callSite.methodName);
 
             // Check if any evidence actually supports the best candidate's namespace.
-            // This is more precise than hasAnyEvidence: evidence may exist but be unrelated
-            // to the chosen namespace (e.g., evidence points to "CalendarManager" but
+            // Evidence may exist but be unrelated to the chosen namespace
+            // (e.g., evidence points to "CalendarManager" but
             // the methodUnique fallback chose "HttpRequest.request").
             boolean hasSupportingEvidence = false;
             if (result.bestCandidate != null) {
@@ -1106,14 +1142,76 @@ public class CaiResolver {
             // the ambiguity check should reflect that B's effective utility was
             // penalized by λ, not its raw score.
             String componentNamespace = result.callSite != null ? result.callSite.componentNamespace : null;
+            String comparableComponentNamespace = RISK_CONTROL
+                    ? getCanonicalNamespaceKey(componentNamespace)
+                    : componentNamespace;
             Map<String, Double> nsScores = new LinkedHashMap<>();
             for (CandidateApi cand : cands) {
                 String canonicalNs = getCanonicalNamespaceKey(cand.namespace);
                 double adjustedScore = cand.score;
-                if (componentNamespace != null && !canonicalNs.equals(componentNamespace)) {
+                if (componentNamespace != null && !canonicalNs.equals(comparableComponentNamespace)) {
                     adjustedScore -= CONSISTENCY_PENALTY_LAMBDA;
                 }
-                nsScores.merge(canonicalNs, adjustedScore, Double::sum);
+                if (RISK_CONTROL) {
+                    // Candidate duplication and alias expansion must not act as a
+                    // statistical prior for an SDK namespace.
+                    nsScores.merge(canonicalNs, adjustedScore, Math::max);
+                } else {
+                    nsScores.merge(canonicalNs, adjustedScore, Double::sum);
+                }
+            }
+
+            if (RISK_CONTROL) {
+                // Open-world decisions use absolute provenance support and separation
+                // from the strongest alternative. Entropy remains diagnostic only:
+                // normalizing over catalog entries would make an otherwise identical
+                // decision depend on how many unsupported vendor rules are installed.
+                double maxScore = nsScores.values().stream()
+                        .mapToDouble(Double::doubleValue).max().orElse(0.0);
+                double sumExp = 0.0;
+                for (double score : nsScores.values()) {
+                    sumExp += Math.exp(score - maxScore);
+                }
+                double diagnosticEntropy = 0.0;
+                for (double score : nsScores.values()) {
+                    double probability = Math.exp(score - maxScore) / sumExp;
+                    if (probability > 1e-10) {
+                        diagnosticEntropy -= probability
+                                * (Math.log(probability) / Math.log(2));
+                    }
+                }
+                result.entropy = diagnosticEntropy;
+
+                String bestKey = result.bestCandidate != null
+                        ? getCanonicalNamespaceKey(result.bestCandidate.namespace) : null;
+                double bestSupport = cands.stream()
+                        .filter(cand -> Objects.equals(
+                                getCanonicalNamespaceKey(cand.namespace), bestKey))
+                        .mapToDouble(cand -> cand.supportScore)
+                        .max().orElse(0.0);
+                double bestScore = bestKey != null
+                        ? nsScores.getOrDefault(bestKey, Double.NEGATIVE_INFINITY)
+                        : Double.NEGATIVE_INFINITY;
+                double alternativeScore = nsScores.entrySet().stream()
+                        .filter(entry -> !Objects.equals(entry.getKey(), bestKey))
+                        .mapToDouble(Map.Entry::getValue)
+                        .max().orElse(Double.NEGATIVE_INFINITY);
+                double margin = bestScore - alternativeScore;
+
+                boolean insufficientSupport = bestSupport < AmbiguityModel.MIN_CONFIDENCE;
+                boolean insufficientSeparation = nsScores.size() > 1
+                        && margin < AmbiguityModel.MARGIN_THRESHOLD;
+                result.isAmbiguous = result.bestCandidate == null
+                        || insufficientSupport || insufficientSeparation;
+                if (result.isAmbiguous) {
+                    Logger.log("  [CAIR] Abstain (open-world support="
+                            + String.format("%.2f", bestSupport)
+                            + ", margin=" + String.format("%.2f", margin) + "): "
+                            + strippedMethod + " -> "
+                            + (result.bestCandidate != null
+                            ? result.bestCandidate.namespace : "<none>"));
+                }
+                continue;
             }
 
             if (nsScores.size() <= 1) {
@@ -1131,13 +1229,27 @@ public class CaiResolver {
                 // check below.
 
                 // Check: inherently ambiguous method + no SUPPORTING evidence + low score = block
+                // This catches cases like "getConfig" resolved to Calendar when PTA points to
+                // LiveEventBus/MspConfig — the method is too generic to trust without evidence.
                 boolean isGeneric = AmbiguityModel.isInherentlyAmbiguous(strippedMethod);
-                if (isGeneric && !hasSupportingEvidence && result.bestCandidate != null
-                        && result.bestCandidate.score <= 0.1) {
+                if (!result.isAmbiguous && isGeneric && !hasSupportingEvidence && result.bestCandidate != null
+                        && result.bestCandidate.score <= 0.3) {
                     result.isAmbiguous = true;
                     result.entropy = 2.0;
                     Logger.log("  [CAIR] Ambiguous (no supporting evidence, generic method): "
                             + strippedMethod + " -> " + result.bestCandidate.namespace);
+                }
+                // Additional: even with some supporting evidence, if all STRONG evidence
+                // (PTA_CLASS/STATIC_TYPE) contradicts the best candidate's namespace,
+                // the resolution is unreliable for generic methods.
+                if (!result.isAmbiguous && isGeneric && result.bestCandidate != null
+                        && !strongNamespaces.isEmpty() && !hasStrongEvidence) {
+                    // All strong evidence points away from the chosen namespace
+                    result.isAmbiguous = true;
+                    result.entropy = Math.max(result.entropy, 2.0);
+                    Logger.log("  [CAIR] Ambiguous (strong evidence contradicts, generic method): "
+                            + strippedMethod + " -> " + result.bestCandidate.namespace
+                            + " (strongNs=" + strongNamespaces + ")");
                 }
                 continue;
             }
@@ -1164,7 +1276,7 @@ public class CaiResolver {
 
             // Use AmbiguityModel which considers both entropy and inherent method ambiguity
             result.isAmbiguous = AmbiguityModel.isAmbiguous(
-                    entropy, strippedMethod, hasStrongEvidence);
+                    entropy, strippedMethod, hasStrongEvidence, hasSupportingEvidence);
 
             // Absolute score threshold: if the best candidate has very low supporting evidence,
             // the resolution is unreliable regardless of entropy. Check supportScore (excludes
@@ -1197,7 +1309,7 @@ public class CaiResolver {
             // This matches the old matchIndirectCall's GENERIC_METHOD_BLACKLIST logic:
             //   if (GENERIC_METHOD_BLACKLIST.contains(method) && !hasPtaCandidates && namespaceCandidates.isEmpty())
             if (!result.isAmbiguous && AmbiguityModel.isInherentlyAmbiguous(strippedMethod)
-                    && !hasSupportingEvidence && result.bestCandidate != null && result.bestCandidate.score <= 0.1) {
+                    && !hasSupportingEvidence && result.bestCandidate != null && result.bestCandidate.score <= 0.3) {
                 result.isAmbiguous = true;
                 result.entropy = Math.max(result.entropy, 2.0);
                 Logger.log("  [CAIR] Ambiguous (no supporting evidence, generic method, multi-ns): "
@@ -1423,6 +1535,11 @@ public class CaiResolver {
         // Step 7: Generate certificates
         generateCertificates(allResults);
 
+        // Optional structured trace for reproducible binding experiments.
+        // resultMap mirrors the scanner-visible decision set and removes duplicate
+        // observations of the same Stmt from API_MAP and FIELD_MAP.
+        BindingExperimentTrace.record(new ArrayList<>(resultMap.values()));
+
         return resultMap;
     }
 
@@ -1444,8 +1561,14 @@ public class CaiResolver {
         hit.permission = result.bestCandidate.rule.rule.permission;
         hit.profilingCategory = result.bestCandidate.rule.rule.profilingCategory;
         hit.dataDirection = result.bestCandidate.rule.rule.dataDirection;
+        hit.apiSignature = result.bestCandidate.rule.rule.apiSignature;
+        hit.dataType = result.bestCandidate.rule.rule.dataType;
+        hit.label = result.bestCandidate.rule.rule.label;
         hit.matchedFullName = result.callSite.resolvedFullName;
+        hit.stmtClass = result.callSite.stmt != null
+                ? result.callSite.stmt.getClass().getName() : null;
         hit.stmtObj = result.callSite.stmt;
+        hit.stmtIndex = ScannerUtils.safeStmtIndex(result.callSite.stmt);
         hit.file = result.callSite.fileName;
         hit.function = result.callSite.functionName;
         hit.confidence = result.isAmbiguous ? "low" : "high";
@@ -1533,6 +1656,72 @@ public class CaiResolver {
             return msg != null ? msg : t.getClass().getSimpleName();
         } catch (Throwable t2) {
             return t.getClass().getSimpleName();
+        }
+    }
+
+    private static boolean isEvidenceDisabled(EvidenceKind kind) {
+        String raw = System.getProperty("arkprism.cair.disabledEvidence", "");
+        if (raw == null || raw.isBlank() || kind == null) return false;
+        for (String token : raw.split(",")) {
+            if (kind.name().equalsIgnoreCase(token.trim())) return true;
+        }
+        return false;
+    }
+
+    private static double reviewedRuleEvidenceScore(
+            CallSiteInfo site,
+            PreciseSensitiveApiScanner.PrivacyApiRuleWithPkg item) {
+        if (site == null || item == null || item.rule == null) {
+            return 0.0;
+        }
+        double score = 0.0;
+
+        Integer count = callSiteArgumentCount(site.stmt);
+        Integer minimum = item.rule.minimumArgumentCount;
+        Integer maximum = item.rule.maximumArgumentCount;
+        if (count != null && minimum != null && maximum != null) {
+            score += count >= minimum && count <= maximum ? 0.25 : -0.05;
+        }
+
+        String resolved = normalizeModuleEvidence(site.resolvedFullName);
+        String sdkModule = normalizeModuleEvidence(item.rule.sdkModule);
+        String systemPackage = normalizeModuleEvidence(item.systemPackage);
+        if (!sdkModule.isEmpty() && resolved.contains(sdkModule)) {
+            score += 0.35;
+        }
+        if (!systemPackage.isEmpty() && resolved.contains(systemPackage)) {
+            score += 0.20;
+        }
+        return score;
+    }
+
+    private static Integer callSiteArgumentCount(Stmt stmt) {
+        if (!(stmt instanceof CallStmt)) {
+            return null;
+        }
+        try {
+            var callExpr = ((CallStmt) stmt).getCallExpr();
+            if (callExpr == null || callExpr.getArgList() == null) {
+                return null;
+            }
+            return callExpr.getArgList().size();
+        } catch (Throwable ignored) {
+            return null;
+        }
+    }
+
+    private static String normalizeModuleEvidence(String value) {
+        return value == null ? "" : value.trim().toLowerCase(Locale.ROOT)
+                .replace(':', '.');
+    }
+
+    private static double getDoubleProperty(String name, double defaultValue) {
+        String raw = System.getProperty(name);
+        if (raw == null || raw.isBlank()) return defaultValue;
+        try {
+            return Double.parseDouble(raw.trim());
+        } catch (NumberFormatException ignored) {
+            return defaultValue;
         }
     }
 

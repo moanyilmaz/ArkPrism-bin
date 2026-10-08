@@ -112,8 +112,37 @@ public class AmbiguityModel {
     public static boolean isInherentlyAmbiguous(String methodName) {
         if (methodName == null) return false;
         String lower = methodName.toLowerCase(Locale.ROOT);
-        return GENERIC_METHODS.contains(lower);
+        if (GENERIC_METHODS.contains(lower)) return true;
+        // Pattern-based check for compound generic accessor names that are
+        // common across many unrelated classes (e.g., getConfig appears in
+        // Calendar, LiveEventBus, MspConfig, etc.). These short compound
+        // names are unreliable for namespace resolution without supporting evidence.
+        // We use a length cap (≤10 chars) to avoid flagging specific API names
+        // like getCurrentLocation (19 chars) that uniquely identify their namespace.
+        if (lower.length() > 3 && lower.length() <= 10) {
+            for (String prefix : GENERIC_COMPOUND_PREFIXES) {
+                if (lower.startsWith(prefix) && lower.length() > prefix.length()) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
+
+    /**
+     * Prefixes for compound generic method names. Methods starting with these
+     * prefixes (e.g., getConfig, setData, getInfo, onCreate) are common
+     * accessors/callbacks that many unrelated classes implement.
+     * Combined with the length cap (≤10 chars) in isInherentlyAmbiguous,
+     * this catches short generic names like getConfig (9) while allowing
+     * specific API names like getCurrentLocation (19).
+     */
+    private static final String[] GENERIC_COMPOUND_PREFIXES = {
+            "get", "set", "is", "has",     // Accessors
+            "on", "before", "after", "will", "did",  // Callbacks/lifecycle
+            "to", "from", "as",             // Converters
+            "add", "remove", "update",      // Mutators
+    };
 
     /**
      * The set of generic verb method names that are inherently ambiguous.
@@ -168,6 +197,20 @@ public class AmbiguityModel {
      * @return true if the resolution should be treated as ambiguous
      */
     public static boolean isAmbiguous(double entropy, String methodName, boolean hasStrongEvidence) {
+        return isAmbiguous(entropy, methodName, hasStrongEvidence, false);
+    }
+
+    /**
+     * Full-argument version: also accepts hasSupportingEvidence.
+     * Supporting evidence (PATH_TOKEN, FACTORY_MAP, etc.) can override
+     * the unconditional ambiguity of single-word generic methods — these
+     * are common verb names (start, stop, request) that appear in many
+     * namespaces, but when PATH_TOKEN evidence points to a compatible
+     * factory method (e.g., getUserAuthInstance → UserAuthInstance),
+     * the resolution is well-grounded and should not be blocked.
+     */
+    public static boolean isAmbiguous(double entropy, String methodName,
+                                      boolean hasStrongEvidence, boolean hasSupportingEvidence) {
         // Compute adaptive threshold based on catalog entropy
         double catalogH = catalogAnalyzed ? getMethodCatalogEntropy(methodName) : 0.0;
         double adaptiveThreshold = AMBIGUITY_THRESHOLD - CATALOG_ENTROPY_ALPHA * catalogH;
@@ -177,11 +220,24 @@ public class AmbiguityModel {
         if (hasStrongEvidence && entropy < adaptiveThreshold) {
             return false;
         }
-        // No strong evidence + generic method → always ambiguous
-        if (!hasStrongEvidence && isInherentlyAmbiguous(methodName)) {
+        // No strong evidence + single-word generic method → ambiguous only
+        // when there is also NO supporting evidence. PATH_TOKEN/FACTORY_MAP
+        // evidence can ground a resolution even for generic verbs.
+        // Example: PATH_TOKEN→getUserAuthInstance grounds start→UserAuthInstance.
+        if (!hasStrongEvidence && !hasSupportingEvidence && isSingleWordGeneric(methodName)) {
             return true;
         }
         // Otherwise, use adaptive entropy threshold
         return entropy > adaptiveThreshold;
+    }
+
+    /**
+     * Returns true only for single-word generic methods in the GENERIC_METHODS set.
+     * Compound generic names (getData, getConfig, etc.) are NOT included here —
+     * they are handled through score-based ambiguity in CaiResolver.assessAmbiguity.
+     */
+    private static boolean isSingleWordGeneric(String methodName) {
+        if (methodName == null) return false;
+        return GENERIC_METHODS.contains(methodName.toLowerCase(Locale.ROOT));
     }
 }

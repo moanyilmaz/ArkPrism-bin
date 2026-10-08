@@ -4,6 +4,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 
 import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.text.SimpleDateFormat;
@@ -12,6 +14,8 @@ import java.util.Comparator;
 import java.util.Date;
 import java.util.List;
 import java.util.Locale;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipInputStream;
 import java.util.stream.Stream;
 
 /**
@@ -73,10 +77,15 @@ public class Main {
         File profileCombinationJsonFile = new File(profileCombinationJsonPath);
         File nativeRuleJsonFile = new File(nativeRuleJsonPath);
 
-        
+
         if (!outputRoot.exists()) {
             outputRoot.mkdirs();
         }
+
+        // If input is a .zip file, extract it to a temp directory and extract
+        // each .hap/.hsp inside. If input is a directory containing .hap/.hsp
+        // files, extract those too.
+        inputDir = resolveInput(inputDir, outputRoot);
 
         // Determine output directory and batch mode early for log file
         DiscoveryResult discovery = discoverTargets(inputDir);
@@ -302,6 +311,142 @@ public class Main {
         System.gc();
 
         return report;
+    }
+
+    // ======================================================
+    // Input Resolution (ZIP / HAP / HSP extraction)
+    // ======================================================
+
+    /**
+     * Resolves the input path into a directory that discoverTargets() can process.
+     *
+     * Supported inputs:
+     *   1. A .zip file containing one or more .hap/.hsp files at the root level
+     *   2. A directory containing .hap/.hsp files (extracts each one)
+     *   3. A directory with already-extracted hap/hsp subdirectories (passthrough)
+     *
+     * For cases 1 and 2, a temp directory is created under outputRoot/_extracted/.
+     * The caller does not need to clean up — the temp directory persists for
+     * inspection but can be safely deleted after analysis.
+     */
+    private static File resolveInput(File input, File outputRoot) throws IOException {
+        if (input == null || !input.exists()) {
+            return input;
+        }
+
+        // Case 1: input is a .zip file
+        if (input.isFile() && input.getName().toLowerCase(Locale.ROOT).endsWith(".zip")) {
+            File extractDir = new File(outputRoot, "_extracted_" + System.currentTimeMillis());
+            extractDir.mkdirs();
+            Logger.log("[*] Input is a ZIP file, extracting to: " + extractDir.getAbsolutePath());
+            unzip(input, extractDir);
+            // After extracting the outer zip, extract each .hap/.hsp inside
+            extractHapHspFiles(extractDir);
+            return extractDir;
+        }
+
+        // Case 2: input is a directory — check if it (or its children) contains .hap/.hsp files
+        if (input.isDirectory()) {
+            // First check if the directory itself contains .hap/.hsp files
+            File[] hapHspFiles = input.listFiles((dir, name) -> {
+                String lower = name.toLowerCase(Locale.ROOT);
+                return lower.endsWith(".hap") || lower.endsWith(".hsp");
+            });
+
+            if (hapHspFiles != null && hapHspFiles.length > 0) {
+                // Extract each .hap/.hsp into a subdirectory
+                extractHapHspFiles(input);
+                return input;
+            }
+
+            // Also check first-level subdirectories for .hap/.hsp files
+            File[] children = input.listFiles();
+            if (children != null) {
+                for (File child : children) {
+                    if (child.isDirectory()) {
+                        File[] childHapHsp = child.listFiles((dir, name) -> {
+                            String lower = name.toLowerCase(Locale.ROOT);
+                            return lower.endsWith(".hap") || lower.endsWith(".hsp");
+                        });
+                        if (childHapHsp != null && childHapHsp.length > 0) {
+                            extractHapHspFiles(child);
+                        }
+                    }
+                }
+            }
+
+            // Case 3: already-extracted directories — passthrough
+            return input;
+        }
+
+        return input;
+    }
+
+    /**
+     * Finds all .hap and .hsp files in the given directory (non-recursive) and
+     * extracts each one into a subdirectory of the same name (without extension).
+     * The original archive files are deleted after successful extraction.
+     */
+    private static void extractHapHspFiles(File dir) throws IOException {
+        File[] archives = dir.listFiles((d, name) -> {
+            String lower = name.toLowerCase(Locale.ROOT);
+            return lower.endsWith(".hap") || lower.endsWith(".hsp");
+        });
+
+        if (archives == null) return;
+
+        for (File archive : archives) {
+            String baseName = archive.getName();
+            // Remove extension (.hap or .hsp)
+            int dotIdx = baseName.lastIndexOf('.');
+            if (dotIdx > 0) {
+                baseName = baseName.substring(0, dotIdx);
+            }
+
+            File extractDir = new File(dir, baseName);
+            if (!extractDir.exists()) {
+                extractDir.mkdirs();
+            }
+
+            Logger.log("[*] Extracting " + archive.getName() + " to " + extractDir.getName() + "/");
+            unzip(archive, extractDir);
+
+            // Delete the original archive to save disk space
+            archive.delete();
+        }
+    }
+
+    /**
+     * Extracts all entries from a zip file to the target directory.
+     */
+    private static void unzip(File zipFile, File targetDir) throws IOException {
+        try (ZipInputStream zis = new ZipInputStream(new FileInputStream(zipFile))) {
+            ZipEntry entry;
+            while ((entry = zis.getNextEntry()) != null) {
+                File outFile = new File(targetDir, entry.getName());
+
+                // Prevent zip-slip vulnerability
+                String canonicalTarget = targetDir.getCanonicalPath();
+                String canonicalOut = outFile.getCanonicalPath();
+                if (!canonicalOut.startsWith(canonicalTarget + File.separator) && !canonicalOut.equals(canonicalTarget)) {
+                    throw new IOException("Zip entry outside target directory: " + entry.getName());
+                }
+
+                if (entry.isDirectory()) {
+                    outFile.mkdirs();
+                } else {
+                    outFile.getParentFile().mkdirs();
+                    try (FileOutputStream fos = new FileOutputStream(outFile)) {
+                        byte[] buffer = new byte[8192];
+                        int len;
+                        while ((len = zis.read(buffer)) > 0) {
+                            fos.write(buffer, 0, len);
+                        }
+                    }
+                }
+                zis.closeEntry();
+            }
+        }
     }
 
     // ======================================================

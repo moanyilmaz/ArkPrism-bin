@@ -264,13 +264,41 @@ public class PreciseSensitiveApiScanner {
 
                 transformWithSSA(hiFile);
 
-                // Build call graph BEFORE scanning so Andersen PTA is available
+                // Build call graph BEFORE scanning so PTA is available
                 // for namespace inference during indirect call matching.
                 // The same CG will be reused for chain extraction in buildCallChainsForFile.
+                //
+                // CG algorithm is configurable via system property -Dcg.method:
+                //   ANDERSEN (default, highest precision, slowest)
+                //   RTA      (faster, slightly lower precision — skips PTA-dependent FP gating)
+                //   CHA      (fastest, lowest precision — skips PTA-dependent FP gating)
+                //
+                // API detection (API_MAP/FIELD_MAP matching) is unaffected by CG choice;
+                // only PTA-based FP filtering and call chain extraction use the CG.
                 CallGraph cg = null;
+                String cgMethodStr = System.getProperty("cg.method", "ANDERSEN").toUpperCase(Locale.ROOT);
+                CallGraph.CGBuildMethod cgMethod;
+                switch (cgMethodStr) {
+                    case "RTA":
+                        cgMethod = CallGraph.CGBuildMethod.RTA;
+                        break;
+                    case "CHA":
+                        cgMethod = CallGraph.CGBuildMethod.CHA;
+                        break;
+                    case "RA":
+                        cgMethod = CallGraph.CGBuildMethod.RA;
+                        break;
+                    default:
+                        cgMethod = CallGraph.CGBuildMethod.ANDERSEN;
+                        cgMethodStr = "ANDERSEN";
+                        break;
+                }
                 try {
-                    Logger.log("[*] Building call graph with ANDERSEN for scanning...");
-                    cg = Stage.createCallGraph(hiFile, CallGraph.CGBuildMethod.ANDERSEN, true);
+                    Logger.log("[*] Building call graph with " + cgMethodStr + " for scanning...");
+                    long cgStartNs = System.nanoTime();
+                    cg = Stage.createCallGraph(hiFile, cgMethod, true);
+                    long cgElapsedMs = (System.nanoTime() - cgStartNs) / 1_000_000;
+                    Logger.log("[*] Call graph built in " + cgElapsedMs + " ms");
                 } catch (Throwable t) {
                     String msg = "Call graph construction failed for " + abcFile.getAbsolutePath() + ": " + t.getMessage();
                     result.warnings.add(msg);
@@ -1216,10 +1244,18 @@ public class PreciseSensitiveApiScanner {
         // Used in the @bundle method-only fallback to reject FPs where an
         // app-internal class has a method name that coincidentally matches
         // a privacy API rule (e.g., app's getAlbums vs PhotoAccessHelper.getAlbums).
+        //
+        // When using non-Andersen CG methods (RTA/CHA), cg.getPta() returns
+        // a non-Andersen PTA instance, so we skip PTA-dependent checks.
+        // The existing null-check guards in NamespaceResolver handle this
+        // gracefully by falling back to static type analysis and name parsing.
         Andersen andersen = null;
         if (cg != null) {
             try {
-                andersen = (Andersen) cg.getPta();
+                Object pta = cg.getPta();
+                if (pta instanceof Andersen) {
+                    andersen = (Andersen) pta;
+                }
             } catch (Throwable ignored) {
                 // PTA not available, proceed without base type checking
             }
