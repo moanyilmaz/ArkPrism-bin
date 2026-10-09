@@ -228,7 +228,7 @@ ArkPrism/
 │   └── UnifiedPrivacyReport.java          # 统一报告数据结构
 │
 ├── config/
-│   ├── privacy_apis.json        # ArkTS 隐私 API 规则（199条）
+│   ├── privacy_apis.json        # 已审核的 ArkTS API 目录（295条记录、171个API）
 │   ├── native_privacy_apis.json # Native 隐私 API 规则（235条）
 │   └── profile_combinations.json # 多源联合检测规则
 │
@@ -249,6 +249,7 @@ ArkPrism/
 | `DataFlowExplorer.java` | IFDS 数据流：source → sink 污点追踪 |
 | `MultiSourceCollaborationAnalyzer.java` | 多源联合：规则匹配 same_method / lca / same_file |
 | `PrivacyCatalog.java` | 加载 privacy_apis.json 中的 source/sink 目录 |
+| `PrivacyApiConfigLoader.java` | 校验审核目录并转换为扫描规则 |
 | `AliasAnalyzer.java` | 包装华为 Andersen PTA 做别名分析 |
 | `UnifiedPrivacyReport.java` | 报告数据结构（JSON 模型） |
 
@@ -404,15 +405,18 @@ input/
                                     // 命中分类
       "apiPackage": "@kit.BasicServicesKit",
       "namespace": "deviceInfo",
-      "method": "productModel",
+      "method": "serial",
+      "apiSignature": "deviceInfo.serial",
+      "dataType": "Identifiers",
+      "label": "SN",
       "args": [],                   // 从语句中提取的参数
-      "code": "VirtualCall: %0.<deviceInfo.productModel>",
+      "code": "FieldLoad: %0.<deviceInfo.serial>",
                                     // 原始 IR 语句
       "file": "modules.abc",        // 来源文件
       "declaringMethod": "MyComponent:aboutToAppear()",
                                     // 所在函数
       "permission": null,           // 所需权限（若有）
-      "profilingCategory": "device_identity.hardware",
+      "profilingCategory": "Identifiers",
                                     // 分析类别
       "dataDirection": "source",    // source / sink / both
       "confidence": "high"          // high / medium / low
@@ -438,7 +442,7 @@ input/
         },
         {
           "caller": "getDeviceInfo()",
-          "callee": "deviceInfo.productModel",
+          "callee": "deviceInfo.serial",
           "callType": "direct"
         }
       ],
@@ -446,7 +450,7 @@ input/
         {
           "method": "aboutToAppear()",
           "file": "modules.abc",
-          "code": "VirtualCall: %0.<deviceInfo.productModel>\n..."
+          "code": "FieldLoad: %0.<deviceInfo.serial>\n..."
         }
       ],
       "dataSinks": [
@@ -462,8 +466,8 @@ input/
         "pageName": "MyPage",
         "componentClass": "MyComponent",
         "semanticAnchor": "MyComponent:aboutToAppear()",
-        "simplifiedChain": "aboutToAppear() -> getDeviceInfo() -> productModel()",
-        "purposeHint": "In modules.abc, function aboutToAppear() calls productModel, data flows to network(request)"
+        "simplifiedChain": "aboutToAppear() -> getDeviceInfo() -> serial",
+        "purposeHint": "In modules.abc, function aboutToAppear() reads deviceInfo.serial"
       }
     }
   ],
@@ -509,31 +513,26 @@ input/
 
 **文件位置：** `config/privacy_apis.json`
 
-**结构：**
+该文件直接使用人工审核后的扁平目录。当前版本包含 295 条记录，覆盖 171 个不同的 API。相同 API 可以有多条记录，用来表示 callback、Promise 或不同参数形式；这些记录不能随意删除。
+
+**结构示例：**
 
 ```json
 [
   {
-    "systemPackage": "@kit.BasicServicesKit",
-    "category": "device_identity",
-    "privacyApis": [
-      {
-        "namespace": "deviceInfo",
-        "method": "productModel",
-        "directCall": true,
-        "permission": null,
-        "profilingCategory": "device_identity.hardware",
-        "dataDirection": "source"
-      },
-      {
-        "namespace": "geoLocationManager",
-        "method": "getCurrentLocation",
-        "directCall": true,
-        "permission": "ohos.permission.LOCATION",
-        "profilingCategory": "location",
-        "dataDirection": "source"
-      }
-    ]
+    "URL_postfix": "js-apis-sim",
+    "import_kit": "@kit.TelephonyKit",
+    "possible_module_title": "@ohos.telephony.sim (SIM卡管理)",
+    "api_signature": "sim.getSimAccountInfo",
+    "api_kwd": "getSimAccountInfo",
+    "call_catagory": "直接调用",
+    "descrip0": "getSimAccountInfo(slotId: number): Promise<IccAccountInfo>",
+    "descrip1": "获取SIM卡账户信息。使用Promise异步回调。",
+    "descrip2": "需要权限：ohos.permission.GET_TELEPHONY_STATE",
+    "permission": "ohos.permission.GET_TELEPHONY_STATE",
+    "dataType": "Identifiers",
+    "label": "ICCID",
+    "supplement": ""
   }
 ]
 ```
@@ -542,21 +541,20 @@ input/
 
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
-| `systemPackage` | string | 是 | ArkTS 包名，如 `@kit.BasicServicesKit` |
-| `namespace` | string | 是 | API 命名空间，如 `deviceInfo`、`geoLocationManager` |
-| `method` | string | 是 | 方法名，如 `productModel`、`getCurrentLocation` |
-| `directCall` | boolean | 否 | `true`=精确匹配；`false`=后缀匹配；`null`=常量字段 |
-| `permission` | string | 否 | 所需权限，如 `ohos.permission.LOCATION` |
-| `profilingCategory` | string | 否 | 分析类别，如 `location`、`device_identity.hardware` |
-| `dataDirection` | string | 否 | `source`/`sink`/`both`/`excluded` |
+| `import_kit` | string | 是 | API 所属 Kit |
+| `possible_module_title` | string | 是 | 可能出现的 SDK 模块或对象 |
+| `api_signature` | string | 是 | 审核后的完整 API 名称，是运行时匹配的唯一来源 |
+| `api_kwd` | string | 是 | 方法关键词，用于目录校验 |
+| `call_catagory` | string | 是 | `直接调用` 或 `间接调用` |
+| `descrip0` | string | 是 | 官方函数签名，可用于核对参数个数 |
+| `descrip1` | string | 是 | API 功能说明，不参与模糊匹配 |
+| `descrip2` | string | 否 | 权限、系统能力或版本限制说明 |
+| `permission` | string | 是 | 已审核的权限信息，`null` 字符串会转换为空值 |
+| `dataType` | string | 是 | PAC 数据类型，原样写入输出 |
+| `label` | string | 是 | PAC 标签，原样写入输出 |
+| `supplement` | string | 否 | 补充说明 |
 
-**directCall 三种取值的行为差异：**
-
-| 值 | 含义 | 匹配例子 |
-|----|------|----------|
-| `true` | 直接调用 | `geoLocationManager.getCurrentLocation()` |
-| `false` | 间接调用（后缀匹配） | `foo.geoLocationManager.getCurrentLocation()` |
-| `null` | 常量字段 | `wifiManager.SCAN_RESULTS` |
+加载时会检查必填字段、调用类别和同一 API 的映射一致性。只要同一个 `api_signature` 出现不同的 `dataType` 或 `label`，程序就会停止加载，避免静默产生错误分类。
 
 ### native_privacy_apis.json（Native 规则）
 
@@ -1955,22 +1953,23 @@ PERMISSION = "ohos.permission.LOCATION"  // 定义了 PERMISSION
 
 ### Q: 如何添加新的隐私 API 规则？
 
-**A:** 编辑 `config/privacy_apis.json`，追加新的规则条目：
+**A:** 不要直接补写猜测出来的 API。先把新记录加入经过人工审核的目录，再整体替换 `config/privacy_apis.json`。每条记录必须保留完整字段，例如：
 
 ```json
 {
-  "systemPackage": "@kit.NewKit",
-  "category": "new_category",
-  "privacyApis": [
-    {
-      "namespace": "newManager",
-      "method": "getNewData",
-      "directCall": true,
-      "permission": "ohos.permission.NEW_PERMISSION",
-      "profilingCategory": "new.category",
-      "dataDirection": "source"
-    }
-  ]
+  "URL_postfix": "official-document-path",
+  "import_kit": "@kit.NewKit",
+  "possible_module_title": "@ohos.newModule",
+  "api_signature": "newManager.getNewData",
+  "api_kwd": "getNewData",
+  "call_catagory": "直接调用",
+  "descrip0": "getNewData(): Promise<Data>",
+  "descrip1": "获取经过审核的数据。",
+  "descrip2": "需要权限：ohos.permission.NEW_PERMISSION",
+  "permission": "ohos.permission.NEW_PERMISSION",
+  "dataType": "Reviewed data type",
+  "label": "Reviewed label",
+  "supplement": ""
 }
 ```
 
