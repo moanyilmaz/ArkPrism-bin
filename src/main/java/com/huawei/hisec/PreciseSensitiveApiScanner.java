@@ -764,6 +764,7 @@ public class PreciseSensitiveApiScanner {
         usage.sourceLayer = "ArkTS";
         usage.sourceKind = hit.sourceKind;
         usage.category = hit.category;
+        usage.codeOrigin = inferCodeOrigin(abcFile);
         usage.apiPackage = normalizeApiPackage(hit.systemPackage);
         usage.namespace = hit.namespace;
         usage.method = hit.method;
@@ -2009,6 +2010,47 @@ public class PreciseSensitiveApiScanner {
 
     private String getSourcePrefix(String fullName) {
         return NamePathMatcher.getSourcePrefix(fullName);
+    }
+
+    /**
+     * Infers whether an API call site is in the application's own code or in a third-party library.
+     *
+     * Heuristic: walks up the directory tree from the ABC file to find the module directory.
+     *   - Module directories starting with '@' (e.g., @hw-hmf, @hms-paf, @hw-ae-business) are
+     *     third-party SDK libraries bundled in the HAP.
+     *   - Other module directories (e.g., entry-default, phone-default, base-default) are
+     *     the application's own code modules.
+     *
+     * The module directory is identified as the first ancestor directory that contains
+     * a module.json file (or the directory directly containing the ets/ folder).
+     *
+     * @param abcFile The ABC file being analyzed
+     * @return "app" for application code, "library" for third-party library code
+     */
+    private String inferCodeOrigin(File abcFile) {
+        if (abcFile == null) {
+            return null;
+        }
+        // Walk up the directory tree to find the module directory
+        File current = abcFile.getParentFile();
+        while (current != null) {
+            String name = current.getName();
+            // Module directories starting with '@' are third-party libraries
+            if (name.startsWith("@")) {
+                return "library";
+            }
+            // Check if this directory contains module.json (indicates a module root)
+            File moduleJson = new File(current, "module.json");
+            if (moduleJson.exists()) {
+                return "app";
+            }
+            // Check if this directory's name looks like a module (contains "-default" or "-release")
+            if (name.contains("-default") || name.contains("-release") || name.contains("-prd")) {
+                return "app";
+            }
+            current = current.getParentFile();
+        }
+        return "app"; // Default to app if we can't determine
     }
 
     /**

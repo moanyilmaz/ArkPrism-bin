@@ -148,6 +148,9 @@ public class Main {
             nativeScanner.setNativeRuleFile(nativeRuleJsonFile);
 
             List<BatchItem> batchItems = new ArrayList<>();
+            // Track reports and their files for cross-module post-processing
+            List<UnifiedPrivacyReport> batchReports = new ArrayList<>();
+            List<File> batchReportFiles = new ArrayList<>();
 
             int index = 0;
             for (File hapDir : hapDirs) {
@@ -186,6 +189,119 @@ public class Main {
 
                 BatchItem item = buildBatchItem(report, reportFile);
                 batchItems.add(item);
+                batchReports.add(report);
+                batchReportFiles.add(reportFile);
+            }
+
+            // ── Cross-module library API filtering ──
+            // When filter.library.apis is enabled, API calls from third-party library
+            // modules (codeOrigin="library") are filtered out UNLESS the same API
+            // signature also appears in the application's own code (codeOrigin="app").
+            // This implements the requirement that library-only APIs should not be
+            // reported unless the application actually calls them.
+            //
+            // This filtering must be done at the batch level (not per-module) because
+            // each module's ABC file is scanned independently — we need to know which
+            // APIs appear across ALL modules before deciding what to filter.
+            boolean filterLibraryApis = Boolean.getBoolean("filter.library.apis");
+            if (filterLibraryApis && batchMode && !batchReports.isEmpty()) {
+                Logger.log("");
+                Logger.log("[*] Applying cross-module library API filtering...");
+
+                // Phase 1: Collect API signatures that appear in app code across all modules
+                java.util.Set<String> appApiSignatures = new java.util.HashSet<>();
+                for (UnifiedPrivacyReport report : batchReports) {
+                    if (report != null && report.privacyApiUsages != null) {
+                        for (UnifiedPrivacyReport.ApiUsage usage : report.privacyApiUsages) {
+                            if ("app".equals(usage.codeOrigin)) {
+                                appApiSignatures.add(usage.apiSignature);
+                            }
+                        }
+                    }
+                }
+                Logger.log("[+] App-code API signatures: " + appApiSignatures.size());
+
+                // Phase 2: For each report, filter out library-only APIs
+                int totalRemoved = 0;
+                for (int ri = 0; ri < batchReports.size(); ri++) {
+                    UnifiedPrivacyReport report = batchReports.get(ri);
+                    File reportFile = batchReportFiles.get(ri);
+
+                    if (report == null || report.privacyApiUsages == null) {
+                        continue;
+                    }
+
+                    List<UnifiedPrivacyReport.ApiUsage> usages = report.privacyApiUsages;
+                    int beforeCount = usages.size();
+
+                    // Partition usages into keep/remove
+                    List<UnifiedPrivacyReport.ApiUsage> keptUsages = new ArrayList<>();
+                    java.util.Set<Integer> removedIndices = new java.util.HashSet<>();
+
+                    for (int i = 0; i < usages.size(); i++) {
+                        UnifiedPrivacyReport.ApiUsage usage = usages.get(i);
+                        if ("library".equals(usage.codeOrigin)
+                                && !appApiSignatures.contains(usage.apiSignature)) {
+                            removedIndices.add(i);
+                        } else {
+                            keptUsages.add(usage);
+                        }
+                    }
+
+                    if (!removedIndices.isEmpty()) {
+                        // Update the report's usages
+                        report.privacyApiUsages = keptUsages;
+
+                        // Update summary counts
+                        if (report.summary != null) {
+                            report.summary.arktsApiUsages = keptUsages.size();
+                            report.summary.totalApiUsages = keptUsages.size()
+                                    + (report.summary.nativeApiUsages != 0 ? report.summary.nativeApiUsages : 0);
+                        }
+
+                        // Re-index and filter call chains
+                        if (report.callChains != null) {
+                            java.util.Map<Integer, Integer> oldToNew = new java.util.HashMap<>();
+                            int newIdx = 0;
+                            for (int oldIdx = 0; oldIdx < beforeCount; oldIdx++) {
+                                if (!removedIndices.contains(oldIdx)) {
+                                    oldToNew.put(oldIdx, newIdx++);
+                                }
+                            }
+
+                            List<UnifiedPrivacyReport.CallChainReport> keptChains = new ArrayList<>();
+                            for (UnifiedPrivacyReport.CallChainReport chain : report.callChains) {
+                                if (removedIndices.contains(chain.apiUsageIndex)) {
+                                    continue;
+                                }
+                                Integer newApiUsageIndex = oldToNew.get(chain.apiUsageIndex);
+                                if (newApiUsageIndex != null) {
+                                    chain.apiUsageIndex = newApiUsageIndex;
+                                    keptChains.add(chain);
+                                }
+                            }
+                            report.callChains = keptChains;
+                            if (report.summary != null) {
+                                report.summary.callChainCount = keptChains.size();
+                            }
+                        }
+
+                        // Re-save the filtered report
+                        saveReport(report, reportFile);
+
+                        totalRemoved += removedIndices.size();
+                        Logger.log("[+] " + report.projectName + ": removed " + removedIndices.size()
+                                + " library-only hits (was " + beforeCount + ", now " + keptUsages.size() + ")");
+                    }
+                }
+
+                // Rebuild batch items with updated reports
+                batchItems.clear();
+                for (int ri = 0; ri < batchReports.size(); ri++) {
+                    batchItems.add(buildBatchItem(batchReports.get(ri), batchReportFiles.get(ri)));
+                }
+
+                Logger.log("[+] Cross-module filtering complete: removed " + totalRemoved + " library-only API hits total");
             }
 
             if (batchMode) {
