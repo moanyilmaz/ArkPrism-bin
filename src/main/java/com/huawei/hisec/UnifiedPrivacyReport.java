@@ -115,6 +115,21 @@ public class UnifiedPrivacyReport {
         public String method;
 
         /**
+         * Exact API identity from the reviewed ArkTS catalog.
+         */
+        public String apiSignature;
+
+        /**
+         * PAC data type from the reviewed catalog.
+         */
+        public String dataType;
+
+        /**
+         * PAC label from the reviewed catalog.
+         */
+        public String label;
+
+        /**
          * Arguments.
          * ArkTS: can be parsed from Stmt;
          * Native: usually empty.
@@ -185,6 +200,16 @@ public class UnifiedPrivacyReport {
 
         // confidence: high/medium/low — set by CFG reachability check, @import filter, etc.
         public String confidence;
+
+        /**
+         * Code origin of this API call site: "app" (application's own code) or "library" (third-party SDK).
+         * Determined by the module directory name containing the ABC file:
+         *   - Directories starting with '@' (e.g., @hw-hmf, @hms-paf) are third-party libraries.
+         *   - Other directories (e.g., entry-default, phone-default) are application's own code.
+         * Null if not determined.
+         */
+        @JsonInclude(JsonInclude.Include.NON_NULL)
+        public String codeOrigin;
 
         @JsonIgnore
         public String risk;

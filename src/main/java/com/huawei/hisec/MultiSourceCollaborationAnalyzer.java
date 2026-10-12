@@ -236,7 +236,7 @@ public class MultiSourceCollaborationAnalyzer {
             }
 
             // Fallback to path matching if no CallGraph or CG not found
-            if (results.isEmpty() || results.get(results.size() - 1).ruleId != rule.ruleId) {
+            if (results.isEmpty() || !results.get(results.size() - 1).ruleId.equals(rule.ruleId)) {
                 List<UnifiedPrivacyReport.MultiSourceCollaboration> fallbackResults =
                         analyzeLcaByPath(report, rule, matchedMethodToApis, chainByApiIndex);
                 results.addAll(fallbackResults);
@@ -466,17 +466,27 @@ public class MultiSourceCollaborationAnalyzer {
     }
 
     /**
-     * Get all functions in CallGraph.
+     * Get all functions reachable from entry points via BFS traversal.
+     * Previously only traversed one level (entry functions + their direct callees),
+     * missing nested call chains (e.g., entry → A → B → C where C is never discovered).
      */
     private static Set<HiFunction> visitedFunctions(CallGraph callGraph) {
         Set<HiFunction> funcs = new HashSet<>();
+        Deque<HiFunction> queue = new ArrayDeque<>();
 
         for (HiFunction entry : callGraph.getEntryFunctions()) {
-            funcs.add(entry);
+            if (funcs.add(entry)) {
+                queue.add(entry);
+            }
         }
 
-        for (HiFunction func : funcs) {
-            funcs.addAll(callGraph.getCalleesByCaller(func));
+        while (!queue.isEmpty()) {
+            HiFunction current = queue.poll();
+            for (HiFunction callee : callGraph.getCalleesByCaller(current)) {
+                if (callee != null && funcs.add(callee)) {
+                    queue.add(callee);
+                }
+            }
         }
 
         return funcs;

@@ -182,7 +182,7 @@ echo Output:    %OUTPUT_DIR%
 echo Config:    %CONFIG_DIR%
 echo.
 
-java -Xms4g -Xmx8g -Xss512m ^
+java -Xms4g -Xmx16g -Xss512m ^
     -cp "%CLASSPATH%" ^
     com.huawei.hisec.Main ^
     "%INPUT_DIR%" ^
@@ -245,7 +245,7 @@ echo echo "Output:    ${OUTPUT_DIR}"
 echo echo "Config:    ${CONFIG_DIR}"
 echo echo ""
 echo.
-echo java -Xms4g -Xmx8g -Xss512m \
+echo java -Xms4g -Xmx16g -Xss512m \
 echo     -cp "$CLASSPATH" \
 echo     com.huawei.hisec.Main \
 echo     "$INPUT_DIR" \
