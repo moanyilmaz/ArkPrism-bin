@@ -4,6 +4,16 @@
 
 它直接从编译产物（ArkTS 字节码 `.abc` 和 Native 库 `.so`）中分析隐私敏感 API 的调用行为，**无需应用源代码**。
 
+## 最新可运行版本（2026-10-12）
+
+[下载最新版工具（Windows x64，79.5 MiB）](dist/ArkPrism-bin-latest-20261012.zip) · [SHA-256 校验文件](dist/ArkPrism-bin-latest-20261012.zip.sha256)
+
+本发行包基于源码提交 `81669bf6045829c59f4c727d1c1852412e8c4446`，重新编译全部 25 个 Java 源码文件并替换 `lib/arkprism-main.jar`，同步仓库 `config/` 下的三个配置文件，保留原发行包的分析依赖。
+
+Windows x64 版附带 Java 21 运行时。解压后将应用解包目录放入 `input/`，双击 `run.bat`；也可以执行 `run.bat "C:\path\to\unpacked-app"`。结果写入 `out/`。
+
+已通过 11 个本地 ABC 的批量分析验证，全部成功解析且无警告。Native SO 分析仍需 WSL/angr，本次未做 Native 端到端验证。详细用法、构建记录与逐文件校验值见包内的 `READ_ME_FIRST.md`、`BUILD-INFO.json` 和 `SHA256SUMS.txt`。
+
 ---
 
 ## 目录
