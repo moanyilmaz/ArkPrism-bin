@@ -25,9 +25,12 @@ public class DataFlowExplorer {
 
     /**
      * Enable IFDS-based taint analysis.
-     * Set to false if encountering internal tool failures.
+     * DISABLED: HiFunction.getBody() returns null in the current hianalyzer version,
+     * causing every IFDS source to NPE. The analysis produces 0 valid data-flow paths
+     * while consuming massive memory (e.g., harmonyapy: 136 sources × N sinks → OOM).
+     * Re-enable when hianalyzer fixes the null-body issue.
      */
-    private static final boolean ENABLE_IFDS = true;
+    private static final boolean ENABLE_IFDS = false;
 
     /**
      * Run IFDS analysis per source (one source at a time).

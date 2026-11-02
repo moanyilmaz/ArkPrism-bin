@@ -62,6 +62,21 @@ public class UnifiedPrivacyReport {
      */
     public Summary summary = new Summary();
 
+    public LibraryFiltering libraryFiltering = new LibraryFiltering();
+
+    public static class LibraryFiltering {
+        public boolean enabled = Boolean.parseBoolean(System.getProperty("filter.library.apis", "true"));
+        public int removedUnreachable;
+        public int retainedReachable;
+        public int retainedUnknown;
+    }
+
+    public static class EntryReachability {
+        public String status;
+        public String reason;
+        public List<String> path = new ArrayList<>();
+    }
+
 
     // ======================================================
     // 1. API Hit Points
@@ -113,6 +128,21 @@ public class UnifiedPrivacyReport {
          * Method name.
          */
         public String method;
+
+        /**
+         * Exact API identity from the reviewed ArkTS catalog.
+         */
+        public String apiSignature;
+
+        /**
+         * PAC data type from the reviewed catalog.
+         */
+        public String dataType;
+
+        /**
+         * PAC label from the reviewed catalog.
+         */
+        public String label;
 
         /**
          * Arguments.
@@ -185,6 +215,20 @@ public class UnifiedPrivacyReport {
 
         // confidence: high/medium/low — set by CFG reachability check, @import filter, etc.
         public String confidence;
+
+        /**
+         * Code origin of this API call site: "app" (application's own code) or "library" (third-party SDK).
+         * Captured before ABC merging from scoped module paths and embedded
+         * oh_modules/node_modules records. "unknown" when provenance is missing.
+         */
+        @JsonInclude(JsonInclude.Include.NON_NULL)
+        public String codeOrigin;
+
+        @JsonInclude(JsonInclude.Include.NON_NULL)
+        public String abcPath;
+
+        @JsonInclude(JsonInclude.Include.NON_NULL)
+        public EntryReachability entryReachability;
 
         @JsonIgnore
         public String risk;

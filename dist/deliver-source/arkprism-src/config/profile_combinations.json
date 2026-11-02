@@ -1,0 +1,174 @@
+[
+  {
+    "ruleId": "DEVICE_PROFILE_BASIC",
+    "ruleName": "设备基础画像组合",
+    "matchScope": "same_method",
+    "riskLevel": "medium",
+    "requiredApis": [
+      {
+        "category": "device_identity.hardware"
+      },
+      {
+        "category": "device_identity.software"
+      }
+    ]
+  },
+  {
+    "ruleId": "SYSTEM_SETTING_PROFILE",
+    "ruleName": "系统状态画像组合",
+    "matchScope": "same_method",
+    "riskLevel": "medium",
+    "requiredApis": [
+      {
+        "category": "location"
+      },
+      {
+        "category": "network.wifi"
+      },
+      {
+        "category": "network.bluetooth"
+      }
+    ]
+  },
+  {
+    "ruleId": "MEDIA_FILE_PROFILE",
+    "ruleName": "媒体文件访问组合",
+    "matchScope": "same_method",
+    "riskLevel": "medium",
+    "requiredApis": [
+      {
+        "category": "data_storage.filesystem"
+      },
+      {
+        "category": "user_data.media"
+      }
+    ]
+  },
+  {
+    "ruleId": "LOCATION_TRACKING_WITH_NETWORK",
+    "ruleName": "位置追踪与网络外发组合",
+    "matchScope": "same_method",
+    "riskLevel": "high",
+    "requiredApis": [
+      {
+        "category": "location"
+      },
+      {
+        "category": "network.http"
+      }
+    ]
+  },
+  {
+    "ruleId": "CAMERA_WITH_LOCATION",
+    "ruleName": "摄像头+位置组合",
+    "matchScope": "same_method",
+    "riskLevel": "critical",
+    "requiredApis": [
+      {
+        "category": "media.camera"
+      },
+      {
+        "category": "location"
+      }
+    ]
+  },
+  {
+    "ruleId": "CONTACTS_WITH_NETWORK",
+    "ruleName": "联系人数据网络外发组合",
+    "matchScope": "same_method",
+    "riskLevel": "critical",
+    "requiredApis": [
+      {
+        "category": "user_data.contacts"
+      },
+      {
+        "category": "network.http"
+      }
+    ]
+  },
+  {
+    "ruleId": "FILE_EXFIL_VIA_NETWORK",
+    "ruleName": "文件读取+网络外发组合",
+    "matchScope": "lca",
+    "riskLevel": "high",
+    "requiredApis": [
+      {
+        "category": "data_storage.filesystem"
+      },
+      {
+        "category": "network.http"
+      }
+    ]
+  },
+  {
+    "ruleId": "DEVICE_FINGERPRINTING",
+    "ruleName": "设备指纹采集组合",
+    "matchScope": "same_method",
+    "riskLevel": "high",
+    "requiredApis": [
+      {
+        "namespace": "deviceInfo"
+      },
+      {
+        "namespace": "wifiManager",
+        "method": "getDeviceMacAddress"
+      }
+    ]
+  },
+  {
+    "ruleId": "PREFERENCES_EXFIL",
+    "ruleName": "敏感数据偏好外发组合",
+    "matchScope": "same_method",
+    "riskLevel": "medium",
+    "requiredApis": [
+      {
+        "category": "user_data.account"
+      },
+      {
+        "category": "network.http"
+      }
+    ]
+  },
+  {
+    "ruleId": "MEDIA_EXFIL",
+    "ruleName": "媒体文件网络外发组合",
+    "matchScope": "lca",
+    "riskLevel": "high",
+    "requiredApis": [
+      {
+        "category": "user_data.media"
+      },
+      {
+        "category": "network.http"
+      }
+    ]
+  },
+  {
+    "ruleId": "CLIPBOARD_NETWORK",
+    "ruleName": "剪贴板数据网络外发组合",
+    "matchScope": "same_method",
+    "riskLevel": "high",
+    "requiredApis": [
+      {
+        "category": "user_data.clipboard"
+      },
+      {
+        "category": "network.http"
+      }
+    ]
+  },
+  {
+    "ruleId": "SMS_CAPTURE",
+    "ruleName": "短信数据采集组合",
+    "matchScope": "same_method",
+    "riskLevel": "critical",
+    "requiredApis": [
+      {
+        "category": "user_data.sms"
+      },
+      {
+        "category": "network.http"
+      }
+    ]
+  }
+]

@@ -1,0 +1,38 @@
+FROM python:3.11-slim
+
+LABEL maintainer="ArkPrism"
+LABEL description="ArkPrism Native SO Privacy API Scanner (angr-based)"
+
+WORKDIR /app
+
+# Install system dependencies required by angr for ELF binary analysis
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    binutils \
+    libc6-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install angr.
+# Option A: From Huawei internal PyPI (requires VPN or internal network)
+#   This is the default and will fail if the internal PyPI is unreachable.
+# Option B: From a local .whl file placed alongside the Dockerfile
+#   1. Copy angr-9.2.124rc0+h1-*.whl to the docker/ directory
+#   2. Uncomment the COPY and pip install lines below, and comment out Option A
+
+# --- Option A: Huawei internal PyPI ---
+RUN pip3 install --no-cache-dir \
+    angr==9.2.124rc0+h1 \
+    --index-url https://cmc.centralrepo.rnd.huawei.com/artifactory/api/pypi/pypi-central-repo/simple
+
+# --- Option B: Local .whl file ---
+# COPY angr-*.whl /tmp/
+# RUN pip3 install --no-cache-dir /tmp/angr-*.whl
+
+# Verify angr is importable (fails the build if not installed)
+RUN python3 -c "import angr; print('angr version:', angr.__version__)"
+
+# Copy scanner script
+COPY angr/pure_angr_scanner.py /app/pure_angr_scanner.py
+
+# The scanner takes two arguments: <so_file_path> <rule_json_path>
+# Both paths must be accessible inside the container via volume mounts.
+ENTRYPOINT ["python3", "/app/pure_angr_scanner.py"]
