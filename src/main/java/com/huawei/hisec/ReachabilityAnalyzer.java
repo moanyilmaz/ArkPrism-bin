@@ -57,6 +57,7 @@ public class ReachabilityAnalyzer {
         // Build reachable set for this function
         reachableStmts = buildReachableSet(func);
         reachabilityCache.put(func, reachableStmts);
+        if (reachableStmts == null) return true;
         return reachableStmts.contains(targetStmt);
     }
 

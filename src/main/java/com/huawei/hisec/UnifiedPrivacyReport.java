@@ -62,6 +62,21 @@ public class UnifiedPrivacyReport {
      */
     public Summary summary = new Summary();
 
+    public LibraryFiltering libraryFiltering = new LibraryFiltering();
+
+    public static class LibraryFiltering {
+        public boolean enabled = Boolean.parseBoolean(System.getProperty("filter.library.apis", "true"));
+        public int removedUnreachable;
+        public int retainedReachable;
+        public int retainedUnknown;
+    }
+
+    public static class EntryReachability {
+        public String status;
+        public String reason;
+        public List<String> path = new ArrayList<>();
+    }
+
 
     // ======================================================
     // 1. API Hit Points
@@ -203,13 +218,17 @@ public class UnifiedPrivacyReport {
 
         /**
          * Code origin of this API call site: "app" (application's own code) or "library" (third-party SDK).
-         * Determined by the module directory name containing the ABC file:
-         *   - Directories starting with '@' (e.g., @hw-hmf, @hms-paf) are third-party libraries.
-         *   - Other directories (e.g., entry-default, phone-default) are application's own code.
-         * Null if not determined.
+         * Captured before ABC merging from scoped module paths and embedded
+         * oh_modules/node_modules records. "unknown" when provenance is missing.
          */
         @JsonInclude(JsonInclude.Include.NON_NULL)
         public String codeOrigin;
+
+        @JsonInclude(JsonInclude.Include.NON_NULL)
+        public String abcPath;
+
+        @JsonInclude(JsonInclude.Include.NON_NULL)
+        public EntryReachability entryReachability;
 
         @JsonIgnore
         public String risk;

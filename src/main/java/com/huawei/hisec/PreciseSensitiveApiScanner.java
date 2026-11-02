@@ -172,6 +172,7 @@ public class PreciseSensitiveApiScanner {
 
         // Parser statistics
         public int v1SuccessCount = 0;
+        public UnifiedPrivacyReport.LibraryFiltering libraryFiltering = new UnifiedPrivacyReport.LibraryFiltering();
     }
 
     // ======================================================
@@ -247,23 +248,28 @@ public class PreciseSensitiveApiScanner {
                 .filter(r -> !"excluded".equalsIgnoreCase(r.rule.dataDirection))
                 .collect(Collectors.toList());
 
+        abcFiles.sort(Comparator.comparing((File file) -> ApplicationReachability.isLibrary(file, targetDirectory))
+                .thenComparing(File::getAbsolutePath));
+        Map<File, HiFile> parsedFiles = new LinkedHashMap<>();
+        for (File file : abcFiles) {
+            HiFile parsed = parseAbcWithV1(file, result.warnings);
+            if (parsed != null) {
+                transformWithSSA(parsed);
+                parsedFiles.put(file, parsed);
+            } else {
+                result.warnings.add("ABC parse failed: " + file.getAbsolutePath());
+            }
+        }
         int nextApiUsageIndex = 0;
-        int totalV1Success = 0;
+        int totalV1Success = parsedFiles.size();
+        if (parsedFiles.isEmpty()) return result;
+        ApplicationReachability reachability = new ApplicationReachability(parsedFiles, targetDirectory,
+                parsedFiles.size() == abcFiles.size());
 
-        for (File abcFile : abcFiles) {
-            Logger.log("\n######################################################");
-            Logger.log("[*] Analyzing ABC: " + abcFile.getAbsolutePath());
-
+        // One graph per application, with provenance captured before HiFile merging.
+        for (File abcFile : List.of(parsedFiles.keySet().iterator().next())) {
             try {
-                HiFile hiFile = parseAbcWithV1(abcFile, result.warnings);
-                if (hiFile == null) {
-                    Logger.log("[-] V1 parser failed, skipping.");
-                    continue;
-                }
-                totalV1Success++;
-
-                transformWithSSA(hiFile);
-
+                HiFile hiFile = reachability.mergedFile();
                 // Build call graph BEFORE scanning so PTA is available
                 // for namespace inference during indirect call matching.
                 // The same CG will be reused for chain extraction in buildCallChainsForFile.
@@ -305,6 +311,8 @@ public class PreciseSensitiveApiScanner {
                     Logger.error("[-] " + msg);
                 }
 
+                reachability.analyze(cg);
+
                 List<SensitiveApiHit> hits = scanHiFile(
                         hiFile,
                         abcFile.getName(),
@@ -332,7 +340,12 @@ public class PreciseSensitiveApiScanner {
                 Set<Stmt> sinkStmts = new LinkedHashSet<>();
 
                 for (SensitiveApiHit hit : hits) {
-                    UnifiedPrivacyReport.ApiUsage usage = convertArkTsHitToApiUsage(hit, targetDirectory, abcFile);
+                    File origin = reachability.origin(hit.stmtObj);
+                    UnifiedPrivacyReport.ApiUsage usage = convertArkTsHitToApiUsage(hit, targetDirectory,
+                            origin != null ? origin : abcFile);
+                    usage.abcPath = reachability.relativeOrigin(hit.stmtObj);
+                    usage.codeOrigin = origin == null ? "unknown"
+                            : reachability.isLibraryCall(hit.stmtObj) ? "library" : "app";
 
                     // Create dedup key from usage fields.
                     // Key: code + declaringMethod + apiSignature + stmtIndex
@@ -344,9 +357,18 @@ public class PreciseSensitiveApiScanner {
                     String usageKey = (usage.code != null ? usage.code : "")
                             + "|" + (usage.declaringMethod != null ? usage.declaringMethod : "")
                             + "|" + (usage.apiSignature != null ? usage.apiSignature : "")
-                            + "|" + hit.stmtIndex;
+                            + "|" + hit.stmtIndex + "|" + usage.abcPath
+                            + "|" + reachability.functionIdentity(hit.stmtObj);
 
                     if (seenUsageKeys.add(usageKey)) {
+                        if ("library".equals(usage.codeOrigin)) {
+                            usage.entryReachability = reachability.classify(hit.stmtObj);
+                            switch (usage.entryReachability.status) {
+                                case "unreachable": result.libraryFiltering.removedUnreachable++; continue;
+                                case "reachable": result.libraryFiltering.retainedReachable++; break;
+                                default: result.libraryFiltering.retainedUnknown++;
+                            }
+                        }
                         dedupedUsages.add(usage);
                         usageToProvenance.put(usage, new ApiUsageProvenance(hit));
 
@@ -385,7 +407,7 @@ public class PreciseSensitiveApiScanner {
                         ruleJsonFile,
                         result.callChains,
                         result.warnings,
-                        cg
+                        cg, reachability
                 );
             } catch (Throwable t) {
                 // Per-ABC error isolation: a crash in one ABC (e.g., OOM during
@@ -398,6 +420,9 @@ public class PreciseSensitiveApiScanner {
         }
 
         result.v1SuccessCount = totalV1Success;
+        Logger.log("[Reachability] library hits removed=" + result.libraryFiltering.removedUnreachable
+                + ", retained reachable=" + result.libraryFiltering.retainedReachable
+                + ", retained unknown=" + result.libraryFiltering.retainedUnknown);
 
         Logger.log("[+] V1 parser success count: " + totalV1Success);
         Logger.log("[+] ArkTS ABC scan complete, API hits: " + result.arktsApiUsages.size());
@@ -462,7 +487,7 @@ public class PreciseSensitiveApiScanner {
             File ruleJsonFile,
             List<UnifiedPrivacyReport.CallChainReport> outputChains,
             List<String> warnings,
-            CallGraph cg
+            CallGraph cg, ApplicationReachability reachability
     ) {
         // ── Build one-to-many Stmt → apiUsageIndex mapping from provenance ──
         // A single Stmt can map to multiple apiUsageIndex values when:
@@ -499,6 +524,22 @@ public class PreciseSensitiveApiScanner {
                 Logger.error("[-] " + msg);
             }
         }
+
+        List<CallGraphExplorer.CallChain> entryChains = new ArrayList<>(chains);
+        for (Stmt stmt : sinkStmts) {
+            List<HiFunction> path = reachability.pathTo(stmt);
+            File origin = reachability.origin(stmt);
+            if (origin == null || !reachability.isLibraryCall(stmt)
+                    || path.isEmpty()) continue;
+            entryChains.removeIf(chain -> chain.sinkStmt == stmt);
+            CallGraphExplorer.CallChain chain = new CallGraphExplorer.CallChain();
+            chain.path = path;
+            chain.rootNode = path.get(0);
+            chain.sinkNode = path.get(path.size() - 1);
+            chain.sinkStmt = stmt;
+            entryChains.add(chain);
+        }
+        chains = entryChains;
 
         Logger.log("[+] Call chain extraction complete: " + chains.size()
                 + " (sinkStmts=" + sinkStmts.size()
@@ -764,7 +805,6 @@ public class PreciseSensitiveApiScanner {
         usage.sourceLayer = "ArkTS";
         usage.sourceKind = hit.sourceKind;
         usage.category = hit.category;
-        usage.codeOrigin = inferCodeOrigin(abcFile);
         usage.apiPackage = normalizeApiPackage(hit.systemPackage);
         usage.namespace = hit.namespace;
         usage.method = hit.method;
@@ -2013,47 +2053,6 @@ public class PreciseSensitiveApiScanner {
     }
 
     /**
-     * Infers whether an API call site is in the application's own code or in a third-party library.
-     *
-     * Heuristic: walks up the directory tree from the ABC file to find the module directory.
-     *   - Module directories starting with '@' (e.g., @hw-hmf, @hms-paf, @hw-ae-business) are
-     *     third-party SDK libraries bundled in the HAP.
-     *   - Other module directories (e.g., entry-default, phone-default, base-default) are
-     *     the application's own code modules.
-     *
-     * The module directory is identified as the first ancestor directory that contains
-     * a module.json file (or the directory directly containing the ets/ folder).
-     *
-     * @param abcFile The ABC file being analyzed
-     * @return "app" for application code, "library" for third-party library code
-     */
-    private String inferCodeOrigin(File abcFile) {
-        if (abcFile == null) {
-            return null;
-        }
-        // Walk up the directory tree to find the module directory
-        File current = abcFile.getParentFile();
-        while (current != null) {
-            String name = current.getName();
-            // Module directories starting with '@' are third-party libraries
-            if (name.startsWith("@")) {
-                return "library";
-            }
-            // Check if this directory contains module.json (indicates a module root)
-            File moduleJson = new File(current, "module.json");
-            if (moduleJson.exists()) {
-                return "app";
-            }
-            // Check if this directory's name looks like a module (contains "-default" or "-release")
-            if (name.contains("-default") || name.contains("-release") || name.contains("-prd")) {
-                return "app";
-            }
-            current = current.getParentFile();
-        }
-        return "app"; // Default to app if we can't determine
-    }
-
-    /**
      * Detect SSA phi/copy nodes that compilers emit as intermediate IR.
      *
      * Pattern: "vN = vN.<method>" — the left-hand variable equals the right-hand
@@ -2810,10 +2809,11 @@ public class PreciseSensitiveApiScanner {
             return;
         }
 
-        Files.walk(file.toPath())
-                .filter(Files::isRegularFile)
-                .filter(p -> p.toString().toLowerCase(Locale.ROOT).endsWith(".abc"))
-                .forEach(p -> result.add(p.toFile()));
+        try (java.util.stream.Stream<java.nio.file.Path> paths = Files.walk(file.toPath())) {
+            paths.filter(Files::isRegularFile)
+                    .filter(p -> p.toString().toLowerCase(Locale.ROOT).endsWith(".abc"))
+                    .forEach(p -> result.add(p.toFile()));
+        }
     }
 
     // ======================================================
